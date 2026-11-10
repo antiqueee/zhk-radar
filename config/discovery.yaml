@@ -1,0 +1,13 @@
+# Bound the work of one user-triggered scan. No automatic paid scheduling yet.
+max_pages: 20
+batch_characters: 24000
+max_model_batches: 8
+regions:
+  capitals: [Москва, Московская область, Санкт-Петербург, Ленинградская область]
+  moscow: [Москва, Московская область]
+  petersburg: [Санкт-Петербург, Ленинградская область]
+  russia: [Россия]
+queries:
+  - 'ЖК {region} перенос срока ввода передачи ключей жалобы'
+  - 'ЖК {region} жители дефекты протечки конфликт'
+  - 'ЖК {region} прокуратура стройнадзор предписание'

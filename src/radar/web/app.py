@@ -4,6 +4,7 @@ import json
 import secrets
 import tempfile
 import zipfile
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -28,7 +29,9 @@ from radar.web.configuration import (
     model_config,
     save_settings,
 )
-from radar.web.discovery import SearchRequest, discover
+from radar.web.discovery import SearchRequest
+from radar.web.dossiers import dossier
+from radar.web.jobs import JobRunner
 from radar.web.pdf import render_pdf
 from radar.web.store import STATUSES, Store, now
 
@@ -43,6 +46,10 @@ class Decision(BaseModel):
     topics: list[str] = Field(default_factory=list, max_length=15)
 
 
+class JobRequest(SearchRequest):
+    mode: Literal["live", "demo"] = "live"
+
+
 class Proof(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=160)
@@ -54,7 +61,16 @@ class Proof(BaseModel):
 def create_app(root: Path | None = None):
     root = root or Path.cwd()
     store = Store(root)
-    app = FastAPI(title="Радар · локальный MVP", docs_url="/api/docs")
+    jobs = JobRunner(store)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        jobs.start()
+        yield
+        jobs.close()
+
+    app = FastAPI(title="Мегаполис Интеледженс", docs_url="/api/docs", lifespan=lifespan)
+    app.state.jobs = jobs
     app.state.store = store
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
@@ -98,9 +114,30 @@ def create_app(root: Path | None = None):
         save_settings(root, data)
         return {"saved": True}
 
-    @app.post("/api/search")
-    def search(data: SearchRequest):
-        return discover(store, data)
+    @app.post("/api/search", status_code=202)
+    def search(data: JobRequest):
+        request = SearchRequest.model_validate(data.model_dump(exclude={"mode"}))
+        return jobs.submit(request, data.mode)
+
+    @app.get("/api/jobs/latest")
+    def latest_job():
+        return jobs.latest()
+
+    @app.get("/api/jobs/{ident}")
+    def get_job(ident: str):
+        return jobs.get(ident)
+
+    @app.post("/api/jobs/{ident}/cancel")
+    def cancel_job(ident: str):
+        return jobs.cancel(ident)
+
+    @app.get("/api/sources/{ident}")
+    def source_page(ident: str):
+        with store.connect() as db:
+            row = db.execute("SELECT payload FROM source_pages WHERE id=?", (ident,)).fetchone()
+        if row is None:
+            raise KeyError(ident)
+        return json.loads(row[0])
 
     @app.exception_handler(KeyError)
     async def missing(request, exc):
@@ -116,7 +153,7 @@ def create_app(root: Path | None = None):
 
     @app.get("/api/records/{ident}")
     def record(ident: str):
-        return store.get(ident)
+        return {**store.get(ident), "dossier": dossier(store, ident)}
 
     @app.put("/api/records/{ident}")
     def update(ident: str, data: Decision):
@@ -204,7 +241,10 @@ def create_app(root: Path | None = None):
             raise ValueError("Объект исключён. Сначала измените статус.")
         library = load_offers(root / "config/offers.yaml")
         chat_stats = aggregates(store, ident)
+        research = dossier(store, ident)
         topics = {t: 1 for t in record["topics"]}
+        for topic, count in research["topics"].items():
+            topics[topic] = topics.get(topic, 0) + count
         for topic, count in chat_stats["topics"]:
             if topic != "не_размечено":
                 topics[topic] = topics.get(topic, 0) + count
@@ -238,6 +278,8 @@ def create_app(root: Path | None = None):
             offers=[o.model_dump() for o in selected],
             urls=list(dict.fromkeys([*record["urls"], *[e["url"] for e in record["evidence"]]])),
             record_id=ident,
+            dossier=research,
+            building=record.get("building"),
             stage=record["stage"],
             situation=record["situation"],
             topics=list(topics),
@@ -247,7 +289,7 @@ def create_app(root: Path | None = None):
             limitation="Вымышленный учебный сценарий. Не использовать для коммерческого контакта."
             if record["dataset"] == "demo"
             else (
-                "Исходные сведения не перепроверены по полным первоисточникам. "
+                "Выводы отражают утверждения источников и требуют проверки. "
                 "Автоматический сбор чатов не подключён. Совпадение цитаты с введённым текстом "
                 "не подтверждает подлинность документа. Начальное предложение — диагностика."
             ),

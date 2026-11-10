@@ -29,8 +29,13 @@ def render_pdf(brief: dict) -> bytes:
     def heading(page, text):
         add(page, text, 11, accent, 8)
 
+    research = brief.get("dossier", {})
+    timeline = research.get("signals", [])
+    source_numbers = {url: i for i, url in enumerate(brief["urls"], 1)}
     add(0, brief["name"], 18, accent)
     add(0, f"{brief['developer']} · {brief['region']}", 9, muted)
+    if brief.get("building"):
+        add(0, brief["building"], 10, accent)
     score = brief.get("assessment")
     if score:
         add(
@@ -43,6 +48,32 @@ def render_pdf(brief: dict) -> bytes:
         add(0, "Оценка и класс: не рассчитаны · корпус и сроки требуют подтверждения", 8, muted)
     heading(0, "Что известно")
     add(0, brief["summary"])
+    if timeline:
+        heading(0, "Хроника по публикациям")
+        for signal in timeline[-4:]:
+            stamp = signal["event_date"] or (
+                signal["published_at"] + " (дата публикации)"
+                if signal["published_at"]
+                else "Дата события не установлена"
+            )
+            number = source_numbers.get(signal["source_url"], "?")
+            add(
+                0,
+                f"{stamp} · {signal['kind_label']} [{number}]",
+                8.5,
+                gap=5,
+                url=signal["source_url"],
+            )
+        if len(timeline) > 4:
+            add(0, f"Ещё {len(timeline) - 4} публикаций в карточке.", 7.5, muted)
+        add(
+            0,
+            f"Прочитано страниц: {research['full_pages']}; "
+            f"только поисковых фрагментов: {research['snippets']}. "
+            "Дата публикации не приравнивается к дате события.",
+            7.5,
+            muted,
+        )
     stats = brief.get("chat_stats")
     heading(0, "Обсуждения жителей")
     if stats:
@@ -82,7 +113,17 @@ def render_pdf(brief: dict) -> bytes:
         add(0, brief["note"], 9)
     heading(0, "Пробелы и ближайшая проверка")
     add(0, brief["check"], 9)
-    add(0, "Хроника и ближайшие даты: структурированные сведения пока не подтверждены.", 8, muted)
+    if not timeline:
+        add(
+            0,
+            "Хроника и ближайшие даты: структурированные сведения пока не подтверждены.",
+            8,
+            muted,
+        )
+    else:
+        add(
+            0, "Актуальные сроки по декларации и независимость публикаций требуют сверки.", 8, muted
+        )
     add(0, brief["limitation"], 8, muted)
     add(0, f"Происхождение: {brief['file']} / {brief['sheet']} / строка {brief['row']}", 7.5, muted)
 
@@ -112,7 +153,8 @@ def render_pdf(brief: dict) -> bytes:
         add(1, "Показатели: " + "; ".join(main["kpis"]), 9)
         add(1, "Кому предложить: " + "; ".join(main["buyer_roles"]), 9)
     for offer in brief["offers"][1:]:
-        add(1, "Дополнение: " + offer["name"], 9)
+        pains = [t.replace("_", " ") for t in brief.get("topics", []) if t in offer["pain_topics"]]
+        add(1, ("; ".join(pains[:2]) + " → " if pains else "Дополнение: ") + offer["name"], 9)
     heading(1, "Перед коммерческим предложением")
     add(
         1,
@@ -123,7 +165,9 @@ def render_pdf(brief: dict) -> bytes:
     )
     heading(1, "Источники")
     for i, url in enumerate(brief["urls"][:3], 1):
-        add(1, f"[{i}] Открыть первоисточник", 8.5, accent, 5, url)
+        source_signal = next((s for s in timeline if s["source_url"] == url), None)
+        label = source_signal["source_title"] if source_signal else "Открыть первоисточник"
+        add(1, f"[{i}] {label}", 8.5, accent, 5, url)
     if not brief["urls"]:
         add(1, "Демо-пример: реальных источников нет.", 8, muted)
     if len(brief["urls"]) > 3:
