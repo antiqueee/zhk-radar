@@ -1,0 +1,11 @@
+{
+  "today": "2026-11-10",
+  "house": {"eisgs_id": "synthetic-001", "label": "Тестовый ЖК, корпус 1 (вымышленный)", "flats": 780,
+    "commissioning": "2026-09-30", "transfer_initial": "2026-06-30", "transfer": "2027-06-30",
+    "commissioning_shifts": 1, "transfer_shifts": 2, "readiness": 78},
+  "sales": {"state": "active", "solvent": true, "buyer_known": true, "public_response": true},
+  "signals": [
+    {"kind": "supervision", "occurred_at": "2026-11-01", "trust": "A", "origin": "test-supervision", "quote": "Объявлено предостережение", "document_id": "fixture-1"},
+    {"kind": "regional_media", "occurred_at": "2026-11-05", "trust": "B", "origin": "test-independent-report", "quote": "Жители направили обращение", "document_id": "fixture-2"}
+  ]
+}

@@ -1,0 +1,52 @@
+severity:
+  transfer_delays: [[3, 5], [6, 10], [12, 18]]
+  long_delay: 25
+  repeat_shift: 10
+  overdue_no_rve: 15
+  signals:
+    supervision: 10
+    prosecutor: 15
+    regional_media: 8
+    federal_media: 15
+    buyer_lawsuits_10: 10
+    chat_conflict_25pct: 10
+    collective_complaint: 10
+    initiative_group: 10
+    protest: 15
+  media_max_age_days: 60
+  small_flats: 150
+  large_flats: 500
+  scale: [0.8, 1.0, 1.2]
+sales:
+  active: 40
+  difficult: 10
+  unknown: 0
+  buyer_known: 15
+  public_response: 10
+  demand: 15
+  portfolio_min: 3
+  portfolio: 10
+  warm_contact: 10
+  other_agency: -15
+window:
+  future: [[90, 100], [180, 60]]
+  future_default: 30
+  past: [[59, 90], [180, 70]]
+  past_default: 50
+  stale_days: 60
+  stale_penalty: 20
+classes:
+  A: [60, 50, 50]
+  B: [40, 40]
+  C: [60, 40]
+  early_severity_max: 40
+rules:
+  r1: [[6, 70], [3, 85]]
+  r2_gap_months: 4
+  r3_overdue_days: 30
+  r4_days: 90
+  r5_history_days: 60
+  r5_growth_pp: 3
+  r5_months: 12
+  r6_share: 0.5
+  r6_months: 6
