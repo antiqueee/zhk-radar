@@ -1,0 +1,5 @@
+# No provider is selected on behalf of the agency. Choose in Connections.
+extract:
+  model: ''
+  max_tokens: 4500
+  temperature: 0

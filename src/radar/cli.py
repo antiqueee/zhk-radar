@@ -18,7 +18,35 @@ def main() -> None:
     intake = sub.add_parser("import-workbooks", help="Импорт в непроверенные кандидаты без сети")
     intake.add_argument("files", type=Path, nargs="+")
     intake.add_argument("--output", type=Path, default=Path("data/intake/staging.json"))
+    serve = sub.add_parser("serve", help="Открыть локальное приложение")
+    serve.add_argument("--port", type=int, default=8765)
+    sub.add_parser("backup", help="Создать согласованную локальную копию SQLite")
     args = parser.parse_args()
+    if args.command == "backup":
+        import sqlite3
+        from datetime import UTC, datetime
+
+        source = Path("data/local/workspace.sqlite3")
+        if not source.exists():
+            parser.error("Рабочая база ещё не создана. Сначала запустите приложение.")
+        target = Path("data/backups") / (
+            datetime.now(UTC).strftime("radar-%Y%m%dT%H%M%S%fZ") + ".sqlite3"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(source) as original, sqlite3.connect(target) as backup:
+            original.backup(backup)
+            if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("Проверка резервной копии не прошла")
+        target.chmod(0o600)
+        print(target.resolve())
+        return
+    if args.command == "serve":
+        import uvicorn
+
+        from radar.web.app import create_app
+
+        uvicorn.run(create_app(), host="127.0.0.1", port=args.port)
+        return
     if args.command == "import-workbooks":
         from radar.intake import import_workbooks
 
