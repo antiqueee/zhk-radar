@@ -73,3 +73,21 @@
 фоновый запуск и консервативное объединение по ЖК/региону/корпусу. Дубликаты и
 успешные шаги кешируются. Боевой вызов поиска/модели с ключами не проводился. Perplexity, Brave, Tavily и Gemini Grounding
 в текущем интерфейсе ещё не реализованы — это кандидаты сравнительного теста.
+
+
+## Реализованный сравнительный стенд (10.11.2026)
+
+В «Подключениях» доступен запуск одинаковых запросов для Yandex, Perplexity Search
+и Brave, затем двух выбранных моделей на общем наборе фрагментов. Сохраняются выдачи,
+время, признаки кэша, ручные оценки релевантности и результаты проверки имени/цитаты.
+Это инструмент для будущего измерения, не завершённый бенчмарк на реальных ключах.
+Время кэша не сопоставляется с временем API; полнота без эталона не рассчитывается.
+
+Официальные контракты адаптеров:
+- [Perplexity Search](https://docs.perplexity.ai/api-reference/search-post).
+- [Brave Web Search](https://api-dashboard.search.brave.com/api-reference/web/search/post).
+- [Telethon: авторизация](https://docs.telethon.dev/en/stable/basic/signing-in.html),
+  [сессии](https://docs.telethon.dev/en/stable/concepts/sessions.html).
+- [Telegram Bot API: sendMessage](https://core.telegram.org/bots/api#sendmessage).
+
+Telegram здесь — дополнительный источник по уже найденному объекту, не замена веб-поиска.

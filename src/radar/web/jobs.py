@@ -36,6 +36,11 @@ class JobRunner:
               percent INTEGER NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
             """)
 
+            columns = {r[1] for r in db.execute("PRAGMA table_info(scan_jobs)")}
+            if "idempotency_key" not in columns:
+                db.execute("ALTER TABLE scan_jobs ADD COLUMN idempotency_key TEXT")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS scan_key ON scan_jobs(idempotency_key)")
+
     def start(self):
         with self.lock:
             if self.thread and self.thread.is_alive():
@@ -94,17 +99,23 @@ class JobRunner:
             row = db.execute("SELECT id FROM scan_jobs ORDER BY created_at DESC LIMIT 1").fetchone()
         return self.get(row[0]) if row else None
 
-    def submit(self, request: SearchRequest, mode="live"):
+    def submit(self, request: SearchRequest, mode="live", idempotency_key=None):
         if mode == "live" and not ready(self.store):
             raise ValueError("Добавьте ключи поиска и модель в подключениях.")
         payload = request.model_dump_json()
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            if idempotency_key:
+                existing = db.execute(
+                    "SELECT * FROM scan_jobs WHERE idempotency_key=?", (idempotency_key,)
+                ).fetchone()
+                if existing:
+                    return self.decode(existing)
             active = db.execute(
                 "SELECT * FROM scan_jobs WHERE status IN ('queued','running')"
             ).fetchone()
             if active:
-                if active["request"] == payload and active["mode"] == mode:
+                if not idempotency_key and active["request"] == payload and active["mode"] == mode:
                     return self.decode(active)
                 raise ValueError(
                     "Другой поиск ещё выполняется. Дождитесь завершения или остановите его."
@@ -115,6 +126,9 @@ class JobRunner:
                 "INSERT INTO scan_jobs(id,mode,request,status,stage,detail,created_at,updated_at) "
                 "VALUES(?,?,?,'queued','queued',?,?,?)",
                 (ident, mode, payload, "Поиск поставлен в очередь", stamp, stamp),
+            )
+            db.execute(
+                "UPDATE scan_jobs SET idempotency_key=? WHERE id=?", (idempotency_key, ident)
             )
         self.wake.set()
         return self.get(ident)

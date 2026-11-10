@@ -17,8 +17,18 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from radar.briefs.offers import PainWeight, load_offers, select_offers
+from radar.briefs.report import build_report
 from radar.intake import read_workbook
 from radar.pipeline.evidence import validate_quote
+from radar.web import operations
+from radar.web.benchmark import (
+    BenchmarkModels,
+    BenchmarkRequest,
+    BenchmarkRunner,
+    Review,
+    save_models,
+)
+from radar.web.chat_analysis import analyze
 from radar.web.chats import ChatImport, aggregates, ingest_chat
 from radar.web.configuration import (
     KEYS,
@@ -32,8 +42,10 @@ from radar.web.configuration import (
 from radar.web.discovery import SearchRequest
 from radar.web.dossiers import dossier
 from radar.web.jobs import JobRunner
+from radar.web.operations import OperationsSettings, WeeklyScheduler
 from radar.web.pdf import render_pdf
 from radar.web.store import STATUSES, Store, now
+from radar.web.telegram import TelegramCode, TelegramLink, TelegramLogin, TelegramReader
 
 
 class Decision(BaseModel):
@@ -62,11 +74,16 @@ def create_app(root: Path | None = None):
     root = root or Path.cwd()
     store = Store(root)
     jobs = JobRunner(store)
+    benchmark = BenchmarkRunner(store)
 
     @asynccontextmanager
     async def lifespan(app):
         jobs.start()
+        scheduler.start()
+        benchmark.start()
         yield
+        scheduler.close()
+        benchmark.close()
         jobs.close()
 
     app = FastAPI(title="Мегаполис Интеледженс", docs_url="/api/docs", lifespan=lifespan)
@@ -113,6 +130,31 @@ def create_app(root: Path | None = None):
     def update_settings(data: SettingsUpdate):
         save_settings(root, data)
         return {"saved": True}
+
+    @app.get("/api/benchmark/config")
+    def benchmark_config():
+        return benchmark.config()
+
+    @app.put("/api/benchmark/models")
+    def benchmark_models(data: BenchmarkModels):
+        save_models(root, data)
+        return benchmark.config()
+
+    @app.post("/api/benchmark", status_code=202)
+    def benchmark_start(data: BenchmarkRequest):
+        return benchmark.submit(data)
+
+    @app.get("/api/benchmark/latest")
+    def benchmark_latest():
+        return benchmark.get()
+
+    @app.get("/api/benchmark/{ident}")
+    def benchmark_result(ident: str):
+        return benchmark.get(ident)
+
+    @app.put("/api/benchmark/{ident}/review")
+    def benchmark_review(ident: str, data: Review):
+        return benchmark.review(ident, data)
 
     @app.post("/api/search", status_code=202)
     def search(data: JobRequest):
@@ -199,6 +241,61 @@ def create_app(root: Path | None = None):
             )
         return ingest_chat(store, batch, author_salt())
 
+    telegram = TelegramReader(store, author_salt)
+    app.state.telegram = telegram
+    scheduler = WeeklyScheduler(store, jobs, telegram)
+    app.state.scheduler = scheduler
+
+    @app.get("/api/operations")
+    def operation_status():
+        return {
+            "settings": operations.settings(store),
+            "usage": operations.usage(store),
+            "history": scheduler.history(),
+            "scheduler_error": scheduler.last_error,
+        }
+
+    @app.put("/api/operations")
+    def operation_settings(data: OperationsSettings):
+        return operations.save(store, data)
+
+    @app.get("/api/telegram/status")
+    def telegram_status():
+        return telegram.status()
+
+    @app.post("/api/telegram/login")
+    def telegram_login(data: TelegramLogin):
+        return telegram.login(data.phone)
+
+    @app.post("/api/telegram/confirm")
+    def telegram_confirm(data: TelegramCode):
+        return telegram.confirm(data)
+
+    @app.delete("/api/telegram/session")
+    def telegram_disconnect():
+        return telegram.disconnect()
+
+    @app.get("/api/records/{ident}/telegram")
+    def telegram_links(ident: str):
+        store.get(ident)
+        return telegram.links(ident)
+
+    @app.post("/api/records/{ident}/telegram")
+    def telegram_add(ident: str, data: TelegramLink):
+        return telegram.add(ident, data)
+
+    @app.delete("/api/records/{ident}/telegram")
+    def telegram_remove(ident: str, data: TelegramLink):
+        return telegram.remove(ident, data)
+
+    @app.post("/api/records/{ident}/telegram/sync")
+    def telegram_sync(ident: str, data: TelegramLink):
+        return telegram.sync(ident, data.url)
+
+    @app.post("/api/records/{ident}/chats/analyze")
+    def chat_analyze(ident: str):
+        return analyze(store, ident)
+
     @app.get("/api/chats/example")
     def chat_example():
         return {
@@ -282,7 +379,7 @@ def create_app(root: Path | None = None):
             building=record.get("building"),
             stage=record["stage"],
             situation=record["situation"],
-            topics=list(topics),
+            topics=sorted(topics),
             chat_stats=chat_stats if chat_stats["chats"] else None,
             note=record["note"],
             library_version=library.version,
@@ -290,11 +387,13 @@ def create_app(root: Path | None = None):
             if record["dataset"] == "demo"
             else (
                 "Выводы отражают утверждения источников и требуют проверки. "
-                "Автоматический сбор чатов не подключён. Совпадение цитаты с введённым текстом "
+                "Охват чатов ограничен добавленными источниками. Совпадение цитаты"
+                " с введённым текстом "
                 "не подтверждает подлинность документа. Начальное предложение — диагностика."
             ),
         )
-        render_pdf(payload)  # Reject overflow before storing a version promised as printable.
+        payload["report"] = build_report(payload, library)
+        render_pdf(payload)  # Verify pagination before persisting a printable version.
         return store.save_brief(ident, payload)
 
     @app.get("/api/briefs")

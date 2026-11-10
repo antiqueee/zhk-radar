@@ -1,0 +1,53 @@
+"""Browser acceptance: no credentials, no outbound requests, demo mutations only."""
+
+from pathlib import Path
+
+from playwright.sync_api import expect, sync_playwright
+
+out = Path("data/qa")
+out.mkdir(parents=True, exist_ok=True)
+with sync_playwright() as p:
+    browser = p.chromium.launch(channel="chrome", headless=True)
+    page = browser.new_page(viewport={"width": 1440, "height": 1050})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto("http://127.0.0.1:8765")
+    page.get_by_role("button", name="Подключения", exact=False).click()
+    page.get_by_text("Вход в Telegram", exact=True).click()
+    phone = page.locator("#ops-tg-login input")
+    phone.fill("+79991234567")
+    assert phone.evaluate("e=>e.checkValidity()")
+    phone.fill("")
+    page.get_by_text("Вход в Telegram", exact=True).click()
+    page.get_by_text("Раз в неделю и лимиты запросов", exact=True).click()
+    expect(page.locator('#ops-weekly input[name="enabled"]')).not_to_be_checked()
+    expect(page.locator('#ops-weekly input[name="delivery"]')).not_to_be_checked()
+    page.screenshot(path=str(out / "weekly-settings.png"))
+    page.get_by_text("Раз в неделю и лимиты запросов", exact=True).click()
+    page.get_by_text("Сравнить поиск и модели", exact=True).click()
+    page.get_by_role("button", name="Учебный пример без ключей", exact=True).click()
+    expect(page.locator("#benchmark-result")).to_contain_text("Учебная выдача", timeout=10000)
+    expect(page.locator("#benchmark-result")).to_contain_text("Завершённых внешних вызовов: 0")
+    page.locator("#benchmark-result summary").first.click()
+    page.screenshot(path=str(out / "benchmark.png"))
+    page.get_by_role("button", name="Закрыть подключения").click()
+    page.locator("#dataset").select_option("demo")
+    page.locator('.record-name[data-open="demo-1"]').click()
+    page.locator("#ops-chat-link input").fill("https://t.me/qa_demo_public")
+    page.get_by_role("button", name="Добавить ссылку", exact=True).click()
+    expect(page.locator(".linked-chats")).to_contain_text("Сообщения ещё не прочитаны")
+    expect(page.get_by_role("button", name="Разобрать сообщения моделью")).to_be_visible()
+    page.screenshot(path=str(out / "telegram-links.png"))
+    page.locator('[data-op="remove-chat"][data-url="https://t.me/qa_demo_public"]').click()
+    expect(page.locator(".linked-chats")).not_to_contain_text("qa_demo_public")
+    page.get_by_role("button", name="Закрыть карточку").click()
+    page.reload()
+    page.get_by_role("button", name="Подключения", exact=False).click()
+    page.get_by_text("Сравнить поиск и модели", exact=True).click()
+    expect(page.locator("#benchmark-result")).to_contain_text("Учебная выдача")
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.locator("#connections").evaluate("e=>e.scrollWidth<=e.clientWidth")
+    page.screenshot(path=str(out / "operations-mobile.png"))
+    assert not errors, errors
+    print("Operations UI passed: login, defaults, benchmark, chat links, mobile.")
+    browser.close()

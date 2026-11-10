@@ -3,3 +3,13 @@ extract:
   model: ''
   max_tokens: 4500
   temperature: 0
+
+# Optional comparison roles; choose both in Connections.
+benchmark_a:
+  model: ''
+  max_tokens: 4500
+  temperature: 0
+benchmark_b:
+  model: ''
+  max_tokens: 4500
+  temperature: 0

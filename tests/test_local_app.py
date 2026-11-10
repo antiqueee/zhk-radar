@@ -81,9 +81,9 @@ def test_pdf_versions_and_rejected_record(client):
     assert first.json()["id"] == again["id"]
     pdf = client.get(f"/api/briefs/{again['id']}/pdf")
     reader = PdfReader(io.BytesIO(pdf.content))
-    assert len(reader.pages) == 2
+    assert len(reader.pages) >= 6
     assert "Северный берег" in reader.pages[0].extract_text()
-    assert "Пилот на 30 дней" in reader.pages[1].extract_text()
+    assert "Пилот на 30 дней" in "".join(page.extract_text() for page in reader.pages)
     client.put("/api/records/demo-1", json=decision(client, note="Новая версия"))
     assert client.post("/api/records/demo-1/brief").json()["version"] == 2
     client.put("/api/records/demo-1", json=decision(client, status="rejected"))
@@ -198,7 +198,7 @@ def test_chat_import_updates_pdf_version_and_topics(client):
     assert after["version"] == before["version"] + 1
     assert after["payload"]["chat_stats"]["messages_30d"] == 42
     pdf = client.get(f"/api/briefs/{after['id']}/pdf")
-    text = PdfReader(io.BytesIO(pdf.content)).pages[0].extract_text()
+    text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf.content)).pages)
     assert "42 сообщений" in text
     assert "9 авторов" in text
     assert client.post("/api/records/demo-1/brief").json()["id"] == after["id"]

@@ -114,6 +114,32 @@ def aggregates(store, record_id):
                 "SELECT chat_id,title FROM local_chats WHERE record_id=?", (record_id,)
             )
         ]
+        model_labelled = 0
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='chat_labels'").fetchone():
+            db.execute(
+                "UPDATE chat_labels SET quote='' WHERE EXISTS(SELECT 1 FROM local_messages m "
+                "WHERE m.record_id=chat_labels.record_id AND m.chat_id=chat_labels.chat_id "
+                "AND m.message_id=chat_labels.message_id AND m.sent_at<?)",
+                (retention,),
+            )
+            db.execute(
+                "DELETE FROM chat_label_cache WHERE created_at IS NULL OR created_at<?",
+                ((datetime.now(UTC) - timedelta(days=150)).isoformat(),),
+            )
+            model_labelled = db.execute(
+                "SELECT count(*) FROM chat_labels l JOIN local_messages m ON "
+                "l.record_id=m.record_id AND l.chat_id=m.chat_id AND l.message_id=m.message_id "
+                "WHERE l.record_id=? AND m.sent_at>=?",
+                (record_id, cutoff),
+            ).fetchone()[0]
+        chat_urls = {}
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='telegram_links'").fetchone():
+            chat_urls = {
+                r["peer_id"]: r["url"]
+                for r in db.execute(
+                    "SELECT peer_id,url FROM telegram_links WHERE record_id=?", (record_id,)
+                )
+            }
     topics = {}
     daily = {}
     for message in messages:
@@ -121,6 +147,27 @@ def aggregates(store, record_id):
         topics[topic] = topics.get(topic, 0) + 1
         day = message["sent_at"][:10]
         daily[day] = daily.get(day, 0) + 1
+    examples = []
+    seen_topics = {}
+    titles = {c["chat_id"]: c["title"] for c in chats}
+    for message in sorted(messages, key=lambda m: m["sent_at"], reverse=True):
+        topic = message["topic"]
+        if topic == "не_размечено" or seen_topics.get(topic, 0) >= 2 or not message["text"]:
+            continue
+        seen_topics[topic] = seen_topics.get(topic, 0) + 1
+        examples.append(
+            {
+                "topic": topic,
+                "text": message["text"][:350],
+                "sent_at": message["sent_at"],
+                "title": titles[message["chat_id"]],
+                "url": (chat_urls[message["chat_id"]] + "/" + message["message_id"])
+                if message["chat_id"] in chat_urls
+                else None,
+            }
+        )
+        if len(examples) == 6:
+            break
     labelled = [m for m in messages if m["sentiment"] is not None]
     return {
         "record_id": record_id,
@@ -128,12 +175,15 @@ def aggregates(store, record_id):
         "messages_30d": len(messages),
         "authors_30d": len({m["author_hash"] for m in messages}),
         "labelled": len(labelled),
+        "model_labelled": model_labelled,
         "negative_share": round(sum(m["sentiment"] < 0 for m in labelled) / len(labelled) * 100, 1)
         if labelled
         else None,
         "topics": sorted(topics.items(), key=lambda x: -x[1]),
+        "examples": examples,
         "daily": sorted(daily.items()),
         "method": (
-            "Темы и тональность взяты из выгрузки; автоматическая разметка моделью не выполнялась"
+            f"Моделью размечено {model_labelled} сообщений. Остальная разметка — из выгрузки. "
+            "Разметка не является проверкой фактов."
         ),
     }

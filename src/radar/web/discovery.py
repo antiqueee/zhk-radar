@@ -256,11 +256,16 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
         if progress:
             progress(stage, percent, detail)
 
+    from uuid import uuid4
+
+    from radar.web.operations import BudgetExceeded, reserve_call
+
+    run_id = uuid4().hex
     requests = 0
     cache_hits = 0
     errors = []
 
-    def cached(key, operation):
+    def cached(key, operation, service="search"):
         nonlocal requests, cache_hits
         check()
         with store.connect() as db:
@@ -268,6 +273,7 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
         if row:
             cache_hits += 1
             return json.loads(row[0])
+        reserve_call(store, run_id, service)
         requests += 1
         value = operation()
         with store.connect() as db:
@@ -299,6 +305,8 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                     successful_queries += 1
                     query_results.append(rows)
                 except ValueError as exc:
+                    if isinstance(exc, BudgetExceeded):
+                        raise
                     errors.append({"stage": "search", "detail": str(exc), "query": query})
                     if "401" in str(exc) or "403" in str(exc):
                         raise
@@ -388,6 +396,7 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                         cached(
                             key,
                             lambda b=batch: extract(client, cfg, model, b).model_dump(mode="json"),
+                            service="model",
                         )
                     )
                 check()
@@ -397,6 +406,8 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                     totals[name] += value
                 completed_batches += 1
             except ValueError as exc:
+                if isinstance(exc, BudgetExceeded):
+                    raise
                 errors.append({"stage": "extract", "detail": str(exc)})
         if batches and not completed_batches:
             raise ValueError(
@@ -406,6 +417,7 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
         totals["found"] = len(accepted_ids)
         result = {
             **totals,
+            "record_ids": sorted(accepted_ids),
             "documents": len(documents),
             "full_pages": loaded,
             "snippets": len(documents) - loaded,

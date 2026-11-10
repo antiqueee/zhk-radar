@@ -21,6 +21,8 @@ KEYS = {
     "TG_GROUP_ID",
     "GOOGLE_SA_JSON",
     "SHEET_ID",
+    "PERPLEXITY_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
 }
 
 
@@ -70,10 +72,10 @@ def atomic_write(path: Path, text: str, mode=0o600):
             os.unlink(temporary)
 
 
-def save_settings(root: Path, update: SettingsUpdate):
+def write_secrets(root: Path, updates: dict):
     with SETTINGS_LOCK:
         path = root / ".env"
-        values = {**dotenv_values(path, interpolate=False), **update.values}
+        values = {**dotenv_values(path, interpolate=False), **updates}
         lines = []
         for key, value in values.items():
             if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key) or value is None:
@@ -81,6 +83,11 @@ def save_settings(root: Path, update: SettingsUpdate):
             escaped = value.replace("\\", "\\\\").replace("'", "\\'")
             lines.append(f"{key}='{escaped}'")
         atomic_write(path, "\n".join(lines) + "\n")
+
+
+def save_settings(root: Path, update: SettingsUpdate):
+    with SETTINGS_LOCK:
+        write_secrets(root, update.values)
         cfg = model_config(root)
         cfg.setdefault("extract", {})["model"] = update.model
         atomic_write(root / "config/models.yaml", yaml.safe_dump(cfg, allow_unicode=True), 0o644)

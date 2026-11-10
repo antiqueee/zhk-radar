@@ -9,3 +9,6 @@ data/
 *.session*
 *.egg-info/
 dist/
+
+tmp/
+output/
