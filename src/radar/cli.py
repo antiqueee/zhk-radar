@@ -15,7 +15,15 @@ def main() -> None:
     demo = sub.add_parser("demo", help="Синтетический пример, без сети и расходов")
     demo.add_argument("--input", type=Path, default=Path("tests/fixtures/scenario.json"))
     demo.add_argument("--config", type=Path, default=Path("config/scoring.yaml"))
+    intake = sub.add_parser("import-workbooks", help="Импорт в непроверенные кандидаты без сети")
+    intake.add_argument("files", type=Path, nargs="+")
+    intake.add_argument("--output", type=Path, default=Path("data/intake/staging.json"))
     args = parser.parse_args()
+    if args.command == "import-workbooks":
+        from radar.intake import import_workbooks
+
+        print(json.dumps(import_workbooks(args.files, args.output), ensure_ascii=False, indent=2))
+        return
     payload = json.loads(args.input.read_text())
     result = assess(
         House.model_validate(payload["house"]),
