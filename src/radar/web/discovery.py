@@ -31,6 +31,7 @@ class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     region: str = Field(pattern="^(capitals|moscow|petersburg|russia)$")
     period: str = Field(default="month", pattern="^(month|fortnight)$")
+    enrich: bool = False
 
 
 class SearchDocument(BaseModel):
@@ -85,7 +86,11 @@ def call_json(client, url, headers, body, service):
     try:
         response = client.post(url, headers=headers, json=body)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        from radar.web.money import settle_response
+
+        settle_response(result)
+        return result
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         raise ValueError(
@@ -226,16 +231,19 @@ def discover(
     cancelled=lambda: False,
     dataset="web",
     prepared=None,
+    run_id=None,
 ):
     if not SEARCH_LOCK.acquire(blocking=False):
         raise ValueError("Поиск уже выполняется. Дождитесь завершения.")
     try:
-        return _discover(store, request, client, reader, progress, cancelled, dataset, prepared)
+        return _discover(
+            store, request, client, reader, progress, cancelled, dataset, prepared, run_id
+        )
     finally:
         SEARCH_LOCK.release()
 
 
-def _discover(store, request, client, reader, progress, cancelled, dataset, prepared):
+def _discover(store, request, client, reader, progress, cancelled, dataset, prepared, run_id):
     cfg = configuration(store.root)
     model = model_config(store.root)["extract"]
     if prepared is None and not ready(store):
@@ -260,7 +268,7 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
 
     from radar.web.operations import BudgetExceeded, reserve_call
 
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
     requests = 0
     cache_hits = 0
     errors = []

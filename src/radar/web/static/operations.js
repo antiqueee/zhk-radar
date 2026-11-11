@@ -13,7 +13,7 @@ async function loadOperations() {
   $('#operations-content').innerHTML = `
   <details class="operations-section"><summary>Вход в Telegram</summary>
     <p>${tg.session_saved?'Сессия сохранена. Доступ проверяется при чтении чата.':'Сохраните API ID и API Hash выше, затем войдите с отдельного рабочего аккаунта.'}</p>
-    <p class="caption">Чтение только открытых ссылок, добавленных в карточки. Приложение не вступает в группы и не отправляет сообщения от вашего аккаунта. При первом чтении — последние 30 дней; далее только новые сообщения.</p>
+    <p class="caption">Чтение только открытых ссылок, добавленных в карточки. Приложение не вступает в группы и не отправляет сообщения от вашего аккаунта. При первом чтении — последние 90 дней (порциями); далее только новые сообщения.</p>
     <form id="ops-tg-login"><label class="field">Номер телефона<input name="phone" type="tel" placeholder="+79991234567" required pattern="[+][1-9][0-9]{7,14}"></label><button class="button" type="submit">Получить код входа</button></form>
     <form id="ops-tg-confirm"><div class="form-grid"><label class="field">Код из Telegram<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></label><label class="field">Пароль двухэтапной проверки, если запрошен<input name="password" type="password" autocomplete="off"></label></div><button class="button" type="submit">Завершить вход</button></form>
     <button class="button quiet" data-op="tg-disconnect">Отменить вход / забыть сессию на этом компьютере</button><p class="caption">Удалённую сессию можно отозвать в Telegram → Устройства. Импортированные сообщения останутся в карточках.</p><div id="tg-status" role="status"></div>

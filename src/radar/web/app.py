@@ -16,11 +16,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from radar.briefs.offers import PainWeight, load_offers, select_offers
-from radar.briefs.report import build_report
+from radar.briefs.offers import load_offers
 from radar.intake import read_workbook
 from radar.pipeline.evidence import validate_quote
-from radar.web import completion, operations, registry, stoplist
+from radar.web import advanced, completion, operations, stoplist
 from radar.web.auth import COOKIE, Auth, Login
 from radar.web.benchmark import (
     BenchmarkModels,
@@ -83,15 +82,21 @@ def create_app(root: Path | None = None):
 
     @asynccontextmanager
     async def lifespan(app):
-        maintenance.start()
         jobs.start()
+        maintenance.start()
         scheduler.start()
         benchmark.start()
+        tasks.start()
+        daily.start()
         yield
-        maintenance.close()
-        scheduler.close()
-        benchmark.close()
-        jobs.close()
+        workers = [daily, tasks, maintenance, scheduler, benchmark]
+        for worker in [*workers, jobs]:
+            if hasattr(worker, "stop"):
+                worker.stop.set()
+        for worker in workers:
+            worker.close()
+        # Keep the process lease if an external request outlives graceful shutdown.
+        jobs.close(release=not any(w.thread and w.thread.is_alive() for w in workers))
 
     app = FastAPI(title="Мегаполис Интеледженс", docs_url="/api/docs", lifespan=lifespan)
     app.state.jobs = jobs
@@ -117,6 +122,11 @@ def create_app(root: Path | None = None):
                 "/api/benchmark/models",
                 "/api/sheets",
                 "/api/maintenance",
+                "/api/cases",
+                "/api/evaluations",
+                "/api/automation",
+                "/api/budget",
+                "/api/external-operations",
             )
             if identity["role"] != "admin" and path.startswith(admin_paths):
                 return JSONResponse({"detail": "Доступно администратору"}, status_code=403)
@@ -275,7 +285,19 @@ def create_app(root: Path | None = None):
     @app.get("/api/records")
     def records(dataset: Literal["imported", "demo", "web"] = "imported"):
         excluded = stoplist.entries(store)
-        return [{**r, "blocked": stoplist.match(r, excluded)} for r in store.records(dataset)]
+        from radar.web import workflow
+
+        workflow.initialize(store)
+        with store.connect() as db:
+            scores = {
+                r["record_id"]: {**json.loads(r["payload"]), "updated_at": r["updated_at"]}
+                for r in db.execute("SELECT * FROM candidate_scores")
+            }
+        rows = [
+            {**r, "blocked": stoplist.match(r, excluded), "ranking": scores.get(r["id"])}
+            for r in store.records(dataset)
+        ]
+        return sorted(rows, key=lambda r: -(r["ranking"] or {}).get("rank_score", 0))
 
     @app.get("/api/records/{ident}")
     def record(ident: str):
@@ -332,6 +354,10 @@ def create_app(root: Path | None = None):
 
     telegram = TelegramReader(store, author_salt)
     app.state.telegram = telegram
+    tasks = advanced.install(app, store)
+    from radar.web.automation import DailyWorker
+
+    daily = DailyWorker(store, telegram)
     scheduler = WeeklyScheduler(store, jobs, telegram)
     app.state.scheduler = scheduler
 
@@ -422,73 +448,9 @@ def create_app(root: Path | None = None):
 
     @app.post("/api/records/{ident}/brief")
     def build_brief(ident: str):
-        record = store.get(ident)
-        if record["status"] == "rejected":
-            raise ValueError("Объект исключён. Сначала измените статус.")
-        if stoplist.blocked(store, record):
-            raise ValueError(
-                "Объект в стоп-листе. Снимите ограничение перед подготовкой предложения"
-            )
-        library = load_offers(root / "config/offers.yaml")
-        chat_stats = aggregates(store, ident)
-        research = dossier(store, ident)
-        topics = {t: 1 for t in record["topics"]}
-        for topic, count in research["topics"].items():
-            topics[topic] = topics.get(topic, 0) + count
-        for topic, count in chat_stats["topics"]:
-            if topic != "не_размечено":
-                topics[topic] = topics.get(topic, 0) + count
-        selected = select_offers(
-            library,
-            [PainWeight(topic=t, weight=w) for t, w in topics.items()],
-            record["stage"],
-            record["situation"],
-            chats_connected=bool(chat_stats["messages_30d"]) or record["dataset"] == "demo",
-            low_confidence=record["dataset"] != "demo",
-            blockers=set(),
-            preview=True,
-        )
-        payload = {
-            key: record[key]
-            for key in [
-                "name",
-                "developer",
-                "region",
-                "summary",
-                "check",
-                "dataset",
-                "file",
-                "sheet",
-                "row",
-                "assessment",
-                "evidence",
-            ]
-        }
-        payload.update(
-            offers=[o.model_dump() for o in selected],
-            urls=list(dict.fromkeys([*record["urls"], *[e["url"] for e in record["evidence"]]])),
-            record_id=ident,
-            registry=registry.dossier(store, ident),
-            dossier=research,
-            building=record.get("building"),
-            stage=record["stage"],
-            situation=record["situation"],
-            topics=sorted(topics),
-            chat_stats=chat_stats if chat_stats["chats"] else None,
-            note=record["note"],
-            library_version=library.version,
-            limitation="Вымышленный учебный сценарий. Не использовать для коммерческого контакта."
-            if record["dataset"] == "demo"
-            else (
-                "Выводы отражают утверждения источников и требуют проверки. "
-                "Охват чатов ограничен добавленными источниками. Совпадение цитаты"
-                " с введённым текстом "
-                "не подтверждает подлинность документа. Начальное предложение — диагностика."
-            ),
-        )
-        payload["report"] = build_report(payload, library)
-        render_pdf(payload)  # Verify pagination before persisting a printable version.
-        return store.save_brief(ident, payload)
+        from radar.web.brief_service import build
+
+        return build(store, ident)
 
     @app.get("/api/briefs")
     def briefs(dataset: Literal["imported", "demo", "web"] = "imported"):
@@ -623,6 +585,7 @@ def create_app(root: Path | None = None):
             "fields": {key: bool(cfg.get(key)) for key in KEYS},
             "model": selected_model,
             "review_model": model_config(root).get("review", {}).get("model", ""),
+            "author_model": model_config(root).get("author", {}).get("model", ""),
             "search_ready": bool(selected_model)
             and all(
                 cfg.get(k)

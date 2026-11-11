@@ -179,6 +179,28 @@ class TelegramReader:
             )
         return self.links(record_id)
 
+    def inspect(self, url):
+        url = TelegramLink(url=url).url
+
+        async def action(client):
+            from telethon.tl.functions.channels import GetFullChannelRequest
+
+            entity = await client.get_entity(url.rsplit("/", 1)[1])
+            if not isinstance(entity, Channel) or not entity.username:
+                raise ValueError("Это не публичная группа или канал")
+            full = await client(GetFullChannelRequest(entity))
+            return {
+                "url": url,
+                "title": entity.title,
+                "description": (full.full_chat.about or "")[:1000],
+                "participants": full.full_chat.participants_count,
+                "group": bool(entity.megagroup),
+                "public": True,
+                "note": "Адрес и описание проверены; соответствие ЖК подтверждает аналитик",
+            }
+
+        return self.invoke(action)
+
     def sync(self, record_id, url, limit=1000):
         if not configuration(self.store.root).get("TG_SESSION"):
             raise ValueError("Авторизуйте читатель Telegram в подключениях")
@@ -200,7 +222,7 @@ class TelegramReader:
                 raise ValueError(
                     "Ссылка теперь ведёт на другой чат. Удалите её и проверьте источник"
                 )
-            since = datetime.now(UTC) - timedelta(days=30)
+            since = datetime.now(UTC) - timedelta(days=90)
             messages, cursor, seen = [], link["cursor"], 0
             kwargs = dict(limit=limit + 1, min_id=cursor, reverse=True)
             if not cursor:

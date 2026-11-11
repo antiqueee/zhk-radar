@@ -96,12 +96,28 @@ def ingest_chat(store, batch: ChatImport, salt: str):
     return {"added": count, "received": len(batch.messages), "record_id": batch.record_id}
 
 
-def aggregates(store, record_id):
+def purge(store):
     initialize(store)
-    cutoff = (datetime.now(UTC) - timedelta(days=30)).isoformat()
     retention = (datetime.now(UTC) - timedelta(days=180)).isoformat()
     with store.connect() as db:
         db.execute("UPDATE local_messages SET text='' WHERE sent_at<? AND text!=''", (retention,))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='chat_labels'").fetchone():
+            db.execute(
+                "UPDATE chat_labels SET quote='' WHERE EXISTS(SELECT 1 FROM local_messages m "
+                "WHERE m.record_id=chat_labels.record_id AND m.chat_id=chat_labels.chat_id "
+                "AND m.message_id=chat_labels.message_id AND m.sent_at<?)",
+                (retention,),
+            )
+            db.execute(
+                "DELETE FROM chat_label_cache WHERE created_at IS NULL OR created_at<?",
+                ((datetime.now(UTC) - timedelta(days=150)).isoformat(),),
+            )
+
+
+def aggregates(store, record_id):
+    purge(store)
+    cutoff = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    with store.connect() as db:
         messages = [
             dict(r)
             for r in db.execute(
@@ -116,16 +132,6 @@ def aggregates(store, record_id):
         ]
         model_labelled = 0
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='chat_labels'").fetchone():
-            db.execute(
-                "UPDATE chat_labels SET quote='' WHERE EXISTS(SELECT 1 FROM local_messages m "
-                "WHERE m.record_id=chat_labels.record_id AND m.chat_id=chat_labels.chat_id "
-                "AND m.message_id=chat_labels.message_id AND m.sent_at<?)",
-                (retention,),
-            )
-            db.execute(
-                "DELETE FROM chat_label_cache WHERE created_at IS NULL OR created_at<?",
-                ((datetime.now(UTC) - timedelta(days=150)).isoformat(),),
-            )
             model_labelled = db.execute(
                 "SELECT count(*) FROM chat_labels l JOIN local_messages m ON "
                 "l.record_id=m.record_id AND l.chat_id=m.chat_id AND l.message_id=m.message_id "

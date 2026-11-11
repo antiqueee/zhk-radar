@@ -92,6 +92,9 @@ class BudgetExceeded(ValueError):
 def reserve_call(store, run_id, service):
     """Reserve before external I/O; failed/uncertain calls still consume a slot."""
     initialize(store)
+    from radar.web import money
+
+    money.initialize(store)
     stamp = now()
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -117,10 +120,13 @@ def reserve_call(store, run_id, service):
                         period
                     ]
                 )
-        db.execute(
-            "INSERT INTO api_calls(run_id,service,created_at) VALUES(?,?,?)",
-            (run_id, service, stamp),
-        )
+        amount = money.reserve(db, service, stamp)
+        ticket = db.execute(
+            "INSERT INTO api_calls(run_id,service,created_at,reserved_usd) VALUES(?,?,?,?)",
+            (run_id, service, stamp, amount),
+        ).lastrowid
+    money.PENDING.set((store, ticket))
+    return ticket
 
 
 def usage(store):
@@ -142,7 +148,7 @@ def usage(store):
         "calls": sum(r["calls"] for r in counts),
         "cost_usd": None,
         "note": (
-            "Счётчик попыток платных вызовов. Стоимость уточняйте у "
+            "Счётчик попыток вызовов поиска, моделей и дополнительных API. Стоимость уточняйте у "
             "провайдера; кэш не расходует лимит."
         ),
     }
@@ -185,7 +191,7 @@ def digest(store, job):
         f"Найдено объектов: {result.get('found', 0)}. "
         f"Новых сигналов: {result.get('signals_added', 0)}.",
     ]
-    for ident in result.get("record_ids", [])[:8]:
+    for ident in result.get("shortlist", result.get("record_ids", []))[:8]:
         record = store.get(ident)
         from radar.web.stoplist import blocked
 
@@ -211,7 +217,15 @@ class WeeklyScheduler:
             ]
 
     def start(self):
+        from radar.web.external_ops import initialize
+
+        initialize(self.store)
         with self.store.connect() as db:
+            db.execute(
+                "UPDATE email_outbox SET status='uncertain',"
+                "error='Приложение остановилось во время отправки. Проверьте ящик.' "
+                "WHERE status='sending'"
+            )
             db.execute(
                 "UPDATE weekly_runs SET status='uncertain',error='Приложение "
                 "остановилось во время отправки. Проверьте группу.' WHERE "
@@ -237,7 +251,7 @@ class WeeklyScheduler:
             due = raw["next_run"]
             try:
                 job = self.jobs.submit(
-                    SearchRequest(region=cfg.region), idempotency_key="weekly:" + due
+                    SearchRequest(region=cfg.region, enrich=True), idempotency_key="weekly:" + due
                 )
             except ValueError as exc:
                 self.last_error = str(exc)
@@ -283,6 +297,13 @@ class WeeklyScheduler:
                     for key in ("sync_registry", "sync_sheets")
                 },
             )
+            if (job.get("result") or {}).get("rankings"):
+                from radar.web.workflow import rank
+
+                ordered = rank(self.store, job["result"]["record_ids"])
+                job["result"]["shortlist"] = [
+                    r["record_id"] for r in ordered if r["needs_research"] and not r["excluded"]
+                ][:8]
             message = digest(self.store, job)
             for step in extras:
                 message += "\n" + step["name"] + ": " + step["status"]
@@ -306,6 +327,11 @@ class WeeklyScheduler:
                         row["due"],
                     ),
                 )
+        from radar.web.external_ops import deliver_email
+
+        for row in self.history():
+            if row["status"] == "ready":
+                deliver_email(self.store, row["due"], json.loads(row["payload"])["text"])
         for row in self.history():
             if row["status"] != "ready":
                 continue

@@ -23,14 +23,27 @@ KEYS = {
     "SHEET_ID",
     "PERPLEXITY_API_KEY",
     "BRAVE_SEARCH_API_KEY",
+    "VK_SERVICE_TOKEN",
+    "HH_USER_AGENT",
+    "SMTP_HOST",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_FROM",
+    "SMTP_TO",
+    "BACKUP_REGION",
+    "BACKUP_BUCKET",
+    "BACKUP_ACCESS_KEY",
+    "BACKUP_SECRET_KEY",
+    "BACKUP_ENCRYPTION_KEY",
 }
 
 
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    values: dict[str, str] = Field(default_factory=dict, max_length=12)
+    values: dict[str, str] = Field(default_factory=dict, max_length=48)
     model: str = Field(default="", max_length=150)
     review_model: str | None = Field(default=None, max_length=150)
+    author_model: str | None = Field(default=None, max_length=150)
 
     @field_validator("values")
     @classmethod
@@ -41,7 +54,7 @@ class SettingsUpdate(BaseModel):
             raise ValueError("Некорректное значение подключения")
         return values
 
-    @field_validator("model", "review_model")
+    @field_validator("model", "review_model", "author_model")
     @classmethod
     def check_model(cls, value):
         if value and not re.fullmatch(r"[a-zA-Z0-9._:/-]+", value):
@@ -93,4 +106,6 @@ def save_settings(root: Path, update: SettingsUpdate):
         cfg.setdefault("extract", {})["model"] = update.model
         if update.review_model is not None:
             cfg.setdefault("review", {})["model"] = update.review_model
+        if update.author_model is not None:
+            cfg.setdefault("author", {})["model"] = update.author_model
         atomic_write(root / "config/models.yaml", yaml.safe_dump(cfg, allow_unicode=True), 0o644)

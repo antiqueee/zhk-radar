@@ -185,7 +185,7 @@ def test_running_cancel_is_cooperative_and_durable(store, monkeypatch):
         ),
     )
 
-    def work(store, request, progress, cancelled):
+    def work(store, request, progress, cancelled, run_id=None):
         progress("pages", 25, "Читаем источник")
         for _ in range(300):
             if cancelled():

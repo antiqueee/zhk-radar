@@ -189,6 +189,17 @@ def render_pdf(brief: dict) -> bytes:
         color=MUTED,
     )
 
+    if brief.get("author"):
+        add(
+            "Подготовлено моделью; проверка: "
+            + (
+                "опора на источники рассмотрена"
+                if brief["author"]["status"] == "reviewed"
+                else "требуется ручной разбор"
+            ),
+            size=9,
+            color=MUTED,
+        )
     story.append(PageBreak())
     title(2, "Основания и пробелы", "Что известно о ситуации")
     section("Сведения из материалов", brief.get("summary", "Нет сведений"))
@@ -356,6 +367,8 @@ def render_pdf(brief: dict) -> bytes:
             color=MUTED,
         )
         section("Границы работы", product["scope"])
+        if product.get("rationale"):
+            section("Адаптация автора под объект", product["rationale"])
         add(
             "Владелец со стороны заказчика: " + ", ".join(product["buyer_roles"]),
             size=9,
@@ -403,6 +416,17 @@ def render_pdf(brief: dict) -> bytes:
             product["measurement"] + " Целевые значения согласовать "
             "после исходного замера; сейчас они не установлены.",
         )
+
+    selected_cases = {c for product in products for c in product.get("case_ids", [])}
+    for case in brief.get("cases", []):
+        if case["id"] in selected_cases:
+            section("Опыт агентства: " + case["title"], case["description"])
+            section("Подтверждённый результат другого проекта", case["result"])
+            add(
+                "Основание: " + case["evidence"] + ". Это не гарантия результата для данного ЖК.",
+                size=8,
+                color=MUTED,
+            )
 
     story.append(PageBreak())
     title(4 + len(products), "План запуска", "Пилот на 30 дней")

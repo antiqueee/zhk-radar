@@ -21,6 +21,8 @@ dependencies = [
     "telethon>=1.45,<2",
     "google-auth>=2.40,<3",
     "requests>=2.32,<3",
+    "boto3>=1.35,<2",
+    "cryptography>=44,<51",
 ]
 
 [dependency-groups]

@@ -2,7 +2,7 @@
 
 import json
 
-from radar.web import registry, sheets, stoplist
+from radar.web import extra_sources, registry, sheets, stoplist
 from radar.web.store import now
 
 
@@ -22,6 +22,26 @@ def complete_steps(store, due, settings, fetcher=registry.fetch_house, syncer=sh
                 continue
             house_id = binding["house_id"]
             tasks.append(("ЕИСЖС " + house_id, lambda ident=house_id: fetcher(store, ident)))
+    extra_sources.initialize(store)
+    with store.connect() as db:
+        bindings = list(db.execute("SELECT * FROM extra_bindings"))
+    for binding in bindings:
+        cfg = extra_sources.Binding.model_validate_json(binding["payload"])
+        record = store.get(binding["record_id"])
+        if (
+            cfg.automatic
+            and cfg.confirmed
+            and record["dataset"] != "demo"
+            and not stoplist.blocked(store, record)
+        ):
+            tasks.append(
+                (
+                    "Внешние сигналы " + record["name"],
+                    lambda ident=record["id"]: extra_sources.collect(
+                        store, ident, "weekly:" + due, scheduled=True
+                    ),
+                )
+            )
     if settings.get("sync_sheets"):
         tasks.append(("Google Таблица", lambda: syncer(store)))
     results = []
@@ -34,8 +54,13 @@ def complete_steps(store, due, settings, fetcher=registry.fetch_house, syncer=sh
             results.append(json.loads(row[0]))
             continue
         try:
-            task()
-            result = {"name": name, "status": "обновлено"}
+            outcome = task()
+            result = {
+                "name": name,
+                "status": "частично; проверьте источники"
+                if isinstance(outcome, dict) and outcome.get("status") == "partial"
+                else "обновлено",
+            }
         except Exception:
             # Errors from SDKs may contain credentials; details are in each adapter's UI.
             result = {"name": name, "status": "не обновлено; нужна проверка подключения"}

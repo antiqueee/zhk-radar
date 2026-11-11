@@ -63,12 +63,12 @@ class JobRunner:
             self.thread = threading.Thread(target=self.loop, name="radar-scan", daemon=True)
             self.thread.start()
 
-    def close(self):
+    def close(self, release=True):
         self.stop.set()
         self.wake.set()
         if self.thread:
             self.thread.join(timeout=2)
-        if self.lease and (not self.thread or not self.thread.is_alive()):
+        if release and self.lease and (not self.thread or not self.thread.is_alive()):
             self.lease.close()
             self.lease = None
 
@@ -181,7 +181,24 @@ class JobRunner:
 
                 result = run_demo(self.store, request, **kwargs)
             else:
-                result = discover(self.store, request, **kwargs)
+                if request.enrich:
+                    kwargs["progress"] = lambda stage, percent, detail: self.progress(
+                        ident, stage, int(percent * 0.78), detail
+                    )
+                result = discover(self.store, request, run_id=ident, **kwargs)
+                if request.enrich:
+                    from radar.web.workflow import complete_scan
+
+                    result = complete_scan(
+                        self.store,
+                        result,
+                        ident,
+                        cancelled=lambda: self.cancelled(ident),
+                        progress=lambda stage, percent, detail: self.progress(
+                            ident, stage, percent, detail
+                        ),
+                    )
+                    self.progress(ident, "done", 100, "Отбор и исследование завершены")
             status = result["status"]
         except ScanCancelled:
             status = "interrupted" if self.stop.is_set() else "cancelled"

@@ -19,3 +19,9 @@ review:
   model: ''
   max_tokens: 5000
   temperature: 0
+
+# Optional grounded proposal author, distinct from review.
+author:
+  model: ''
+  max_tokens: 6500
+  temperature: 0

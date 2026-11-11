@@ -46,7 +46,7 @@ function renderJob(job) {
   let message=demo+job.detail;
   if (job.cancel_requested && running) message=demo+'Останавливаем после текущего запроса…';
   const r=job.result;
-  if(r) message=demo+`Готово: ${r.found} объектов, ${r.added} новых карточек, ${r.signals_added} новых публикаций. Прочитано страниц: ${r.full_pages}.`;
+  if(r) message=demo+`${job.status==='partial'?'Частичный результат':'Готово'}: ${r.found} объектов, ${r.added} новых карточек, ${r.signals_added} новых публикаций. Прочитано страниц: ${r.full_pages}.${r.shortlist?` Отобрано для проверки: ${r.shortlist.length}.`:""}`;
   if(job.error) message=demo+job.error;
   const warnings=r?.errors?.length?`<details><summary>Не все источники обработаны (${r.errors.length})</summary>${r.errors.slice(0,6).map(e=>`<p>${esc(e.detail)}${e.url?' · '+esc(host(e.url)):''}</p>`).join('')}</details>`:'';
   const limits=r&&(r.skipped_pages||r.skipped_batches)?`<p class="muted">Лимит прогона: отложено страниц ${r.skipped_pages}, групп текстов ${r.skipped_batches}. Это ограниченный обзор.</p>`:'';
@@ -64,7 +64,7 @@ async function watchJob(id) {
   }
 }
 async function startScan(mode='live', request=null) {
-  const job=await api('/search',{method:'POST',body:JSON.stringify(request || {region:$('#search-region').value,period:$('#search-period').value,mode})});
+  const job=await api('/search',{method:'POST',body:JSON.stringify(request || {region:$('#search-region').value,period:$('#search-period').value,mode,enrich:mode==='live'})});
   renderJob(job);await watchJob(job.id);
 }
 async function openRecord(id) {
@@ -81,12 +81,14 @@ const connectionFields=[
  {title:'Анализ найденного',hint:'OpenRouter подключает выбранную модель для выделения объектов и цитат.',keys:[['OPENROUTER_API_KEY','API-ключ OpenRouter','password']]},
  {title:'Telegram',hint:'После сохранения ключей откройте «Вход в Telegram» или настройте недельный дайджест ниже.',keys:[['TG_API_ID','API ID приложения Telegram','text'],['TG_API_HASH','API Hash','password'],['TG_BOT_TOKEN','Токен бота для уведомлений','password'],['TG_GROUP_ID','ID группы для дайджеста','text']]},
  {title:'Сравнение поисковиков',hint:'Дополнительные API для сравнения на одинаковых русскоязычных запросах.',keys:[['PERPLEXITY_API_KEY','API-ключ Perplexity Search','password'],['BRAVE_SEARCH_API_KEY','API-ключ Brave Search','password']]},
+ {title:'Дополнительные источники',hint:'Необязательно. Работодатель, открытая группа и ИНН указываются в карточке объекта.',keys:[['VK_SERVICE_TOKEN','Токен VK API для чтения','password'],['HH_USER_AGENT','hh.ru: название приложения и рабочий email','text']]},
+ {title:'Внешние копии и рабочая почта',hint:'Необязательно. Отправки включаются отдельно ниже. S3 хранит зашифрованную базу; ключ шифрования сохраните в менеджере паролей.',keys:[['SMTP_HOST','SMTP-сервер (TLS, порт 465)','text'],['SMTP_USERNAME','Логин почты','text'],['SMTP_PASSWORD','Пароль приложения почты','password'],['SMTP_FROM','Адрес отправителя','text'],['SMTP_TO','Рабочие адреса получателей через запятую','text'],['BACKUP_REGION','Регион AWS S3','text'],['BACKUP_BUCKET','S3 bucket','text'],['BACKUP_ACCESS_KEY','S3 Access Key','password'],['BACKUP_SECRET_KEY','S3 Secret Key','password'],['BACKUP_ENCRYPTION_KEY','Ключ Fernet для шифрования копий','password']]},
  {title:'Google Sheets',hint:'Сохраните ID таблицы; JSON ключа загрузите в разделе синхронизации ниже.',keys:[['SHEET_ID','ID таблицы','text']]}
 ];
 async function openSettings() {
   const settings=await api('/settings');
   function section(group) {return `<section class="connections-section"><h3>${group.title}<span class="status-label ${group.keys.every(([k])=>settings.fields[k])?'ready':''}">${group.keys.every(([k])=>settings.fields[k])?'Сохранено':'Не заполнено'}</span></h3><p>${group.hint}</p>${group.keys.map(([key,label,type])=>`<label class="field">${label}<input name="${key}" type="${type}" autocomplete="off" spellcheck="false" placeholder="${settings.fields[key]?'Уже сохранено · введите для замены':'Вставьте значение'}" maxlength="2000"></label>`).join('')}</section>`;}
-  $('#connections-content').innerHTML=`<div class="dialog-header"><button class="close" data-action="close-settings" aria-label="Закрыть подключения">×</button><span class="eyebrow">НАСТРОЙКА СЕРВИСОВ</span><h2 id="connections-title">Подключения</h2><p>Добавьте ключи один раз — они сохранятся в рабочем приложении.</p></div><div class="dialog-body"><form id="settings-form">${section(connectionFields[0])}${section(connectionFields[1])}<label class="field">Модель для анализа<input name="model" value="${esc(settings.model)}" placeholder="Идентификатор модели в OpenRouter" maxlength="150"></label><label class="field">Отдельная модель проверки<input name="review_model" value="${esc(settings.review_model)}" placeholder="ID другой модели OpenRouter" maxlength="150"></label><p class="caption">Модель можно сменить без переделки проекта. Запросы к сервисам тарифицируются по вашим аккаунтам.</p><details><summary>Дополнительные подключения: Telegram, поиск и таблицы</summary>${connectionFields.slice(2).map(section).join('')}</details><div class="settings-foot"><button class="button primary" type="submit">Сохранить подключения</button><p>Пустые поля сохраняют прежние значения.<br>Сохранение ключей не запускает платных запросов.</p></div><div id="settings-status" class="form-status" role="status"></div></form><div id="operations-content"></div></div>`;
+  $('#connections-content').innerHTML=`<div class="dialog-header"><button class="close" data-action="close-settings" aria-label="Закрыть подключения">×</button><span class="eyebrow">НАСТРОЙКА СЕРВИСОВ</span><h2 id="connections-title">Подключения</h2><p>Добавьте ключи один раз — они сохранятся в рабочем приложении.</p></div><div class="dialog-body"><form id="settings-form">${section(connectionFields[0])}${section(connectionFields[1])}<label class="field">Модель для анализа<input name="model" value="${esc(settings.model)}" placeholder="Идентификатор модели в OpenRouter" maxlength="150"></label><label class="field">Модель автора предложения<input name="author_model" value="${esc(settings.author_model)}" placeholder="ID модели OpenRouter" maxlength="150"></label><label class="field">Отдельная модель проверки<input name="review_model" value="${esc(settings.review_model)}" placeholder="ID другой модели OpenRouter" maxlength="150"></label><p class="caption">Модель можно сменить без переделки проекта. Запросы к сервисам тарифицируются по вашим аккаунтам.</p><details><summary>Дополнительные подключения: Telegram, поиск и таблицы</summary>${connectionFields.slice(2).map(section).join('')}</details><div class="settings-foot"><button class="button primary" type="submit">Сохранить подключения</button><p>Пустые поля сохраняют прежние значения.<br>Сохранение ключей не запускает платных запросов.</p></div><div id="settings-status" class="form-status" role="status"></div></form><div id="operations-content"></div></div>`;
   await loadOperations();
   await loadCompletionSettings();
   if (!$('#connections').open) $('#connections').showModal();
@@ -137,8 +139,8 @@ document.addEventListener('submit',async e=>{
   e.preventDefault();const b=e.target.querySelector('[type="submit"]');if(!b)return;b.disabled=true;
   try {
     if(e.target.id==='settings-form'){
-      const form=new FormData(e.target);const values=Object.fromEntries([...form].filter(([k,v])=>!['model','review_model'].includes(k)&&v.trim()).map(([k,v])=>[k,v.trim()]));
-      await api('/settings',{method:'PUT',body:JSON.stringify({values,model:form.get('model').trim(),review_model:form.get('review_model').trim()})});
+      const form=new FormData(e.target);const values=Object.fromEntries([...form].filter(([k,v])=>!['model','review_model','author_model'].includes(k)&&v.trim()).map(([k,v])=>[k,v.trim()]));
+      await api('/settings',{method:'PUT',body:JSON.stringify({values,model:form.get('model').trim(),review_model:form.get('review_model').trim(),author_model:form.get('author_model').trim()})});
       await openSettings();$('#settings-status').textContent='Подключения сохранены. Можно закрыть это окно и запустить поиск.';toast('Ключи сохранены');
     }
     if(e.target.id==='decision-form'){const r=await saveDecision();await openRecord(r.id);await refresh();toast('Уточнения сохранены');}

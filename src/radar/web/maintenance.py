@@ -36,7 +36,11 @@ def backup(store, automatic=False):
         folder.chmod(0o700)
         if automatic:
             latest = next((r for r in history(store) if r["status"] == "ok"), None)
-            if latest and latest["created_at"][:10] == now()[:10]:
+            if (
+                latest
+                and latest["created_at"][:10] == now()[:10]
+                and (folder / latest["payload"]["file"]).is_file()
+            ):
                 return latest["payload"]
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         target = folder / ("radar-" + stamp + ".sqlite3")
@@ -89,7 +93,14 @@ class Maintenance:
     def loop(self):
         while not self.stop.is_set():
             try:
+                from radar.web.chats import purge
+
+                purge(self.store)
                 backup(self.store, automatic=True)
+                from radar.web import external_ops
+
+                if external_ops.settings(self.store).cloud_backup:
+                    external_ops.upload_backup(self.store)
                 cutoff = (datetime.now(UTC) - timedelta(days=180)).isoformat()
                 with self.store.connect() as db:
                     db.execute("DELETE FROM access_audit WHERE created_at<?", (cutoff,))
@@ -97,6 +108,7 @@ class Maintenance:
                 self.last_error = None
             except Exception:
                 self.last_error = (
-                    "Резервное копирование не завершено. Проверьте место и права диска."
+                    "Копирование или обслуживание не завершено. "
+                    "Проверьте диск и историю внешних копий."
                 )
             self.stop.wait(3600)

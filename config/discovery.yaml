@@ -1,4 +1,5 @@
-# Bound the work of one user-triggered scan. No automatic paid scheduling yet.
+# Bound the initial stage of manual and opt-in scheduled scans.
+# Follow-up research shares the per-run API limit configured through Connections.
 max_pages: 20
 batch_characters: 24000
 max_model_batches: 8

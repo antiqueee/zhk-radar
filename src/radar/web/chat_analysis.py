@@ -78,7 +78,7 @@ def classify(client, cfg, model, messages, topics):
         raise ValueError("Модель вернула некорректную разметку. Сообщения не изменены") from None
 
 
-def analyze(store, record_id, classifier=classify, client=None):
+def analyze(store, record_id, classifier=classify, client=None, run_id=None):
     if not LOCK.acquire(blocking=False):
         raise ValueError("Разбор чата уже выполняется")
     owns = client is None
@@ -119,7 +119,7 @@ def analyze(store, record_id, classifier=classify, client=None):
         }
         client = client or httpx.Client(timeout=httpx.Timeout(90, connect=15))
         done, cached, calls = 0, 0, 0
-        run = uuid4().hex
+        run = run_id or uuid4().hex
         for offset in range(0, min(len(messages), 120), 60):
             batch = messages[offset : offset + 60]
             key = hashlib.sha256(

@@ -80,12 +80,21 @@ def install(app, store):
         with store.connect() as db:
             rows = list(
                 db.execute(
-                    "SELECT id,version,created_at FROM briefs "
+                    "SELECT id,version,created_at,payload FROM briefs "
                     "WHERE record_id=? ORDER BY id DESC LIMIT 20",
                     (ident,),
                 )
             )
-        return [{**dict(r), "reviews": review.history(store, r["id"])} for r in rows]
+        return [
+            {
+                "id": r["id"],
+                "version": r["version"],
+                "created_at": r["created_at"],
+                "author": json.loads(r["payload"]).get("author"),
+                "reviews": review.history(store, r["id"]),
+            }
+            for r in rows
+        ]
 
     @app.get("/api/briefs/{ident}/review")
     def review_history(ident: int):
