@@ -26,7 +26,7 @@ def early_rules(
         and house.transfer < due + relativedelta(months=cfg["r2_gap_months"])
     ):
         found.append("R2")
-    if due and (today - due).days >= cfg["r3_overdue_days"]:
+    if house.rve_checked and due and (today - due).days >= cfg["r3_overdue_days"]:
         found.append("R3")
     shifted_deadlines = [
         d

@@ -39,7 +39,7 @@ def assess(
         )
     if max(house.commissioning_shifts, house.transfer_shifts) >= 2:
         parts["repeat_shift"] = severity_cfg["repeat_shift"]
-    if house.commissioning and house.commissioning < today and not house.rve:
+    if house.rve_checked and house.commissioning and house.commissioning < today and not house.rve:
         parts["overdue_no_rve"] = severity_cfg["overdue_no_rve"]
     for signal in signals:
         if (
@@ -106,6 +106,8 @@ def assess(
         priority = "C"
     elif rules and severity < c["early_severity_max"]:
         priority = "early"
+    if not house.rve_checked and not house.rve:
+        limitations.append("Наличие РВЭ не проверено: просрочка без РВЭ и R3 не начисляются")
     if house.readiness is None:
         limitations.append("Нет готовности: R1 и R5 отключены")
     return Assessment(

@@ -20,7 +20,8 @@ from radar.briefs.offers import PainWeight, load_offers, select_offers
 from radar.briefs.report import build_report
 from radar.intake import read_workbook
 from radar.pipeline.evidence import validate_quote
-from radar.web import operations
+from radar.web import completion, operations, registry, stoplist
+from radar.web.auth import COOKIE, Auth, Login
 from radar.web.benchmark import (
     BenchmarkModels,
     BenchmarkRequest,
@@ -42,6 +43,7 @@ from radar.web.configuration import (
 from radar.web.discovery import SearchRequest
 from radar.web.dossiers import dossier
 from radar.web.jobs import JobRunner
+from radar.web.maintenance import Maintenance
 from radar.web.operations import OperationsSettings, WeeklyScheduler
 from radar.web.pdf import render_pdf
 from radar.web.store import STATUSES, Store, now
@@ -56,6 +58,7 @@ class Decision(BaseModel):
     stage: int = Field(default=0, ge=0, le=4)
     situation: Literal["сроки", "приёмка", "после_заселения"] = "сроки"
     topics: list[str] = Field(default_factory=list, max_length=15)
+    refusal_reason: str = Field(default="", max_length=500)
 
 
 class JobRequest(SearchRequest):
@@ -73,15 +76,19 @@ class Proof(BaseModel):
 def create_app(root: Path | None = None):
     root = root or Path.cwd()
     store = Store(root)
+    auth = Auth(store)
     jobs = JobRunner(store)
     benchmark = BenchmarkRunner(store)
+    maintenance = Maintenance(store)
 
     @asynccontextmanager
     async def lifespan(app):
+        maintenance.start()
         jobs.start()
         scheduler.start()
         benchmark.start()
         yield
+        maintenance.close()
         scheduler.close()
         benchmark.close()
         jobs.close()
@@ -89,12 +96,36 @@ def create_app(root: Path | None = None):
     app = FastAPI(title="Мегаполис Интеледженс", docs_url="/api/docs", lifespan=lifespan)
     app.state.jobs = jobs
     app.state.store = store
-    app.add_middleware(
-        TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
-    )
+    app.state.maintenance = maintenance
+    completion.install(app, store)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=auth.config["hosts"])
 
     @app.middleware("http")
     async def local_guard(request: Request, call_next):
+        identity = auth.session(request.cookies.get(COOKIE))
+        request.state.identity = identity
+        path = request.url.path
+        if auth.config["enabled"] and path.startswith("/api/") and path != "/api/auth/login":
+            if not identity:
+                return JSONResponse({"detail": "Войдите в рабочий кабинет"}, status_code=401)
+            admin_paths = (
+                "/api/settings",
+                "/api/operations",
+                "/api/telegram/login",
+                "/api/telegram/confirm",
+                "/api/telegram/session",
+                "/api/benchmark/models",
+                "/api/sheets",
+                "/api/maintenance",
+            )
+            if identity["role"] != "admin" and path.startswith(admin_paths):
+                return JSONResponse({"detail": "Доступно администратору"}, status_code=403)
+            if (
+                identity["role"] == "viewer"
+                and request.method not in {"GET", "HEAD"}
+                and path != "/api/auth/logout"
+            ):
+                return JSONResponse({"detail": "Доступ только для просмотра"}, status_code=403)
         if request.method in {"POST", "PUT", "DELETE", "PATCH"}:
             try:
                 size = int(request.headers.get("content-length", "0"))
@@ -107,9 +138,11 @@ def create_app(root: Path | None = None):
                     {"detail": "Разрешены действия из локального интерфейса"}, status_code=403
                 )
             origin = request.headers.get("origin")
-            if origin and origin != str(request.base_url).rstrip("/"):
+            allowed_origin = auth.config["origin"] or str(request.base_url).rstrip("/")
+            if (origin and origin != allowed_origin) or (auth.config["enabled"] and not origin):
                 return JSONResponse({"detail": "Недопустимый источник запроса"}, status_code=403)
         response = await call_next(request)
+        auth.audit(identity, request, response.status_code)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
@@ -125,6 +158,32 @@ def create_app(root: Path | None = None):
         return JSONResponse(
             {"detail": "Проверьте обязательные поля и формат данных"}, status_code=422
         )
+
+    @app.post("/api/auth/login")
+    def login(data: Login, request: Request):
+        token = auth.login(data, request.client.host if request.client else "unknown")
+        response = JSONResponse({"signed_in": True})
+        response.set_cookie(
+            COOKIE, token, max_age=8 * 3600, secure=True, httponly=True, samesite="strict", path="/"
+        )
+        return response
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request):
+        auth.logout(request.cookies.get(COOKIE))
+        response = JSONResponse({"signed_out": True})
+        response.delete_cookie(COOKIE, path="/", secure=True, httponly=True, samesite="strict")
+        return response
+
+    @app.get("/api/session")
+    def current_session(request: Request):
+        return request.state.identity
+
+    @app.get("/healthz")
+    def health():
+        with store.connect() as db:
+            db.execute("SELECT 1").fetchone()
+        return {"status": "ok"}
 
     @app.put("/api/settings")
     def update_settings(data: SettingsUpdate):
@@ -161,6 +220,17 @@ def create_app(root: Path | None = None):
         request = SearchRequest.model_validate(data.model_dump(exclude={"mode"}))
         return jobs.submit(request, data.mode)
 
+    @app.get("/api/search/readiness")
+    def search_readiness():
+        cfg = configuration(root)
+        return {
+            "ready": bool(model_config(root)["extract"].get("model"))
+            and all(
+                cfg.get(k)
+                for k in ["YANDEX_SEARCH_API_KEY", "YANDEX_FOLDER_ID", "OPENROUTER_API_KEY"]
+            )
+        }
+
     @app.get("/api/jobs/latest")
     def latest_job():
         return jobs.latest()
@@ -189,13 +259,32 @@ def create_app(root: Path | None = None):
     async def invalid(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.get("/api/stoplist")
+    def stop_entries():
+        return stoplist.entries(store)
+
+    @app.post("/api/stoplist")
+    def stop_add(data: stoplist.StopEntry, request: Request):
+        return stoplist.add(store, data, request.state.identity["username"])
+
+    @app.delete("/api/stoplist/{ident}")
+    def stop_remove(ident: str):
+        stoplist.remove(store, ident)
+        return {"removed": True}
+
     @app.get("/api/records")
     def records(dataset: Literal["imported", "demo", "web"] = "imported"):
-        return store.records(dataset)
+        excluded = stoplist.entries(store)
+        return [{**r, "blocked": stoplist.match(r, excluded)} for r in store.records(dataset)]
 
     @app.get("/api/records/{ident}")
     def record(ident: str):
-        return {**store.get(ident), "dossier": dossier(store, ident)}
+        record = store.get(ident)
+        return {
+            **record,
+            "dossier": dossier(store, ident),
+            "blocked": stoplist.blocked(store, record),
+        }
 
     @app.put("/api/records/{ident}")
     def update(ident: str, data: Decision):
@@ -336,6 +425,10 @@ def create_app(root: Path | None = None):
         record = store.get(ident)
         if record["status"] == "rejected":
             raise ValueError("Объект исключён. Сначала измените статус.")
+        if stoplist.blocked(store, record):
+            raise ValueError(
+                "Объект в стоп-листе. Снимите ограничение перед подготовкой предложения"
+            )
         library = load_offers(root / "config/offers.yaml")
         chat_stats = aggregates(store, ident)
         research = dossier(store, ident)
@@ -375,6 +468,7 @@ def create_app(root: Path | None = None):
             offers=[o.model_dump() for o in selected],
             urls=list(dict.fromkeys([*record["urls"], *[e["url"] for e in record["evidence"]]])),
             record_id=ident,
+            registry=registry.dossier(store, ident),
             dossier=research,
             building=record.get("building"),
             stage=record["stage"],
@@ -525,9 +619,10 @@ def create_app(root: Path | None = None):
             ("Google Sheets", ["GOOGLE_SA_JSON", "SHEET_ID"], "Синхронизация реестра"),
         ]
         return {
-            "mode": "local",
+            "mode": "server" if auth.config["enabled"] else "local",
             "fields": {key: bool(cfg.get(key)) for key in KEYS},
             "model": selected_model,
+            "review_model": model_config(root).get("review", {}).get("model", ""),
             "search_ready": bool(selected_model)
             and all(
                 cfg.get(k)
@@ -539,7 +634,13 @@ def create_app(root: Path | None = None):
                     "name": n,
                     "keys": keys,
                     "purpose": p,
-                    "configured": all(bool(cfg.get(k)) for k in keys),
+                    "configured": all(
+                        bool(
+                            cfg.get(k)
+                            or (k == "GOOGLE_SA_JSON" and cfg.get("GOOGLE_SA_CREDENTIALS"))
+                        )
+                        for k in keys
+                    ),
                     "connected": False,
                 }
                 for n, keys, p in services
@@ -550,7 +651,14 @@ def create_app(root: Path | None = None):
     app.mount("/static", StaticFiles(directory=static), name="static")
 
     @app.get("/")
-    def home():
-        return FileResponse(static / "index.html")
+    def home(request: Request):
+        return FileResponse(
+            static
+            / (
+                "login.html"
+                if auth.config["enabled"] and not request.state.identity
+                else "index.html"
+            )
+        )
 
     return app

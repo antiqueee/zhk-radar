@@ -23,6 +23,8 @@ class OperationsSettings(BaseModel):
     region: str = Field(default="capitals", pattern="^(capitals|moscow|petersburg|russia)$")
     delivery: bool = False
     sync_chats: bool = False
+    sync_registry: bool = False
+    sync_sheets: bool = False
     per_run: int = Field(default=20, ge=1, le=100)
     daily: int = Field(default=60, ge=1, le=1000)
     monthly: int = Field(default=500, ge=1, le=10000)
@@ -50,7 +52,11 @@ def settings(store):
     initialize(store)
     with store.connect() as db:
         row = db.execute("SELECT * FROM operation_settings WHERE id=1").fetchone()
-    return {**json.loads(row["payload"]), "next_run": row["next_run"], "timezone": "Europe/Moscow"}
+    return {
+        **OperationsSettings.model_validate_json(row["payload"]).model_dump(),
+        "next_run": row["next_run"],
+        "timezone": "Europe/Moscow",
+    }
 
 
 def next_run(cfg, after):
@@ -181,6 +187,10 @@ def digest(store, job):
     ]
     for ident in result.get("record_ids", [])[:8]:
         record = store.get(ident)
+        from radar.web.stoplist import blocked
+
+        if blocked(store, record):
+            continue
         text.append(record["name"] + " · " + record["region"] + "\n" + record["summary"][:180])
     text.append("Выводы требуют проверки. Подробности и PDF доступны в локальном приложении.")
     return "\n\n".join(text)[:4000]
@@ -253,16 +263,33 @@ class WeeklyScheduler:
                 for link in self.telegram.links():
                     if self.stop.is_set():
                         return
-                    if self.store.get(link["record_id"])["dataset"] == "demo":
+                    from radar.web.stoplist import blocked
+
+                    record = self.store.get(link["record_id"])
+                    if record["dataset"] == "demo" or blocked(self.store, record):
                         continue
                     try:
                         chat_results.append(self.telegram.sync(link["record_id"], link["url"]))
                     except ValueError as exc:
                         chat_results.append({"error": str(exc)})
+            from radar.web.weekly_steps import complete_steps
+
+            active = settings(self.store)
+            extras = complete_steps(
+                self.store,
+                row["due"],
+                {
+                    key: bool(snapshot.get(key) and active.get(key))
+                    for key in ("sync_registry", "sync_sheets")
+                },
+            )
             message = digest(self.store, job)
+            for step in extras:
+                message += "\n" + step["name"] + ": " + step["status"]
             if chat_results:
                 message += f"\n\nОбработано чатов: {len(chat_results)}."
                 message += f" Ошибки: {sum('error' in r for r in chat_results)}."
+            message = message.encode("utf-16-le")[:8000].decode("utf-16-le", errors="ignore")
             with self.store.connect() as db:
                 db.execute(
                     "UPDATE weekly_runs SET status='ready',payload=?,updated_at=? WHERE due=?",
@@ -272,6 +299,7 @@ class WeeklyScheduler:
                                 "text": message,
                                 "delivery": snapshot["delivery"],
                                 "chats": chat_results,
+                                "extras": extras,
                             }
                         ),
                         now(),

@@ -20,8 +20,23 @@ def main() -> None:
     intake.add_argument("--output", type=Path, default=Path("data/intake/staging.json"))
     serve = sub.add_parser("serve", help="Открыть локальное приложение")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--host", default="127.0.0.1")
+    user = sub.add_parser("user-add", help="Создать/обновить пользователя серверного режима")
+    user.add_argument("username")
+    user.add_argument("--role", choices=["admin", "analyst", "viewer"], default="analyst")
     sub.add_parser("backup", help="Создать согласованную локальную копию SQLite")
     args = parser.parse_args()
+    if args.command == "user-add":
+        import getpass
+
+        from radar.web.auth import set_user
+
+        password = getpass.getpass("Пароль (от 12 символов): ")
+        if password != getpass.getpass("Повторите пароль: "):
+            parser.error("Пароли не совпадают")
+        set_user(Path.cwd(), args.username, password, args.role)
+        print("Пользователь сохранён. Старые сессии этого пользователя отозваны.")
+        return
     if args.command == "backup":
         import sqlite3
         from datetime import UTC, datetime
@@ -44,8 +59,11 @@ def main() -> None:
         import uvicorn
 
         from radar.web.app import create_app
+        from radar.web.auth import server_config
 
-        uvicorn.run(create_app(), host="127.0.0.1", port=args.port)
+        if args.host not in {"127.0.0.1", "localhost"} and not server_config(Path.cwd())["enabled"]:
+            parser.error("Внешний интерфейс разрешён только в серверном режиме с авторизацией")
+        uvicorn.run(create_app(), host=args.host, port=args.port)
         return
     if args.command == "import-workbooks":
         from radar.intake import import_workbooks

@@ -17,6 +17,7 @@ class House(StrictModel):
     transfer_initial: date | None = None
     transfer: date | None = None
     rve: date | None = None
+    rve_checked: bool = True
     readiness: float | None = Field(default=None, ge=0, le=100)
     commissioning_shifts: int = Field(default=0, ge=0)
     transfer_shifts: int = Field(default=0, ge=0)

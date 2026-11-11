@@ -1,0 +1,42 @@
+services:
+  radar:
+    build: .
+    restart: unless-stopped
+    environment:
+      RADAR_SERVER_MODE: 'true'
+      RADAR_PUBLIC_ORIGIN: https://${RADAR_DOMAIN:?Set RADAR_DOMAIN}
+    volumes:
+      - radar_workspace:/workspace
+    expose:
+      - '8765'
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      options:
+        max-size: '10m'
+        max-file: '3'
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      RADAR_DOMAIN: ${RADAR_DOMAIN:?Set RADAR_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      radar:
+        condition: service_healthy
+    logging:
+      options:
+        max-size: '10m'
+        max-file: '3'
+volumes:
+  radar_workspace:
+  caddy_data:
+  caddy_config:

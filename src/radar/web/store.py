@@ -59,6 +59,9 @@ class Store:
               id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, payload TEXT NOT NULL,
               created_at TEXT NOT NULL);
             """)
+            columns = {r[1] for r in db.execute("PRAGMA table_info(records)")}
+            if "refusal_reason" not in columns:
+                db.execute("ALTER TABLE records ADD COLUMN refusal_reason TEXT NOT NULL DEFAULT ''")
         self.seed()
 
     @contextmanager
@@ -296,8 +299,9 @@ class Store:
             until = (
                 (date.today() + timedelta(days=28)).isoformat() if data.status == "later" else None
             )
+            refusal = getattr(data, "refusal_reason", "")
             cursor = db.execute(
-                """UPDATE records SET status=?,note=?,stage=?,situation=?,topics=?,
+                """UPDATE records SET status=?,note=?,stage=?,situation=?,topics=?,refusal_reason=?,
               revision=revision+1,updated_at=?,snooze_until=? WHERE id=? AND revision=?""",
                 (
                     data.status,
@@ -305,6 +309,7 @@ class Store:
                     data.stage,
                     data.situation,
                     json.dumps(data.topics),
+                    refusal,
                     now(),
                     until,
                     ident,

@@ -19,6 +19,8 @@ dependencies = [
     "httpx>=0.28,<1",
     "reportlab>=4,<5",
     "telethon>=1.45,<2",
+    "google-auth>=2.40,<3",
+    "requests>=2.32,<3",
 ]
 
 [dependency-groups]

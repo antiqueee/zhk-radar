@@ -30,6 +30,7 @@ class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     values: dict[str, str] = Field(default_factory=dict, max_length=12)
     model: str = Field(default="", max_length=150)
+    review_model: str | None = Field(default=None, max_length=150)
 
     @field_validator("values")
     @classmethod
@@ -40,7 +41,7 @@ class SettingsUpdate(BaseModel):
             raise ValueError("Некорректное значение подключения")
         return values
 
-    @field_validator("model")
+    @field_validator("model", "review_model")
     @classmethod
     def check_model(cls, value):
         if value and not re.fullmatch(r"[a-zA-Z0-9._:/-]+", value):
@@ -90,4 +91,6 @@ def save_settings(root: Path, update: SettingsUpdate):
         write_secrets(root, update.values)
         cfg = model_config(root)
         cfg.setdefault("extract", {})["model"] = update.model
+        if update.review_model is not None:
+            cfg.setdefault("review", {})["model"] = update.review_model
         atomic_write(root / "config/models.yaml", yaml.safe_dump(cfg, allow_unicode=True), 0o644)

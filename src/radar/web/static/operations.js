@@ -24,6 +24,7 @@ async function loadOperations() {
     <div class="form-grid"><label class="field">День<select name="weekday">${days.map((d,i)=>`<option value="${i}" ${cfg.weekday===i?'selected':''}>${d}</option>`).join('')}</select></label><label class="field">Час по Москве<input name="hour" type="number" min="0" max="23" value="${cfg.hour}"></label></div>
     <label class="field">География<select name="region">${[['capitals','Москва, Санкт-Петербург и области'],['moscow','Москва и область'],['petersburg','Санкт-Петербург и область'],['russia','Вся Россия']].map(([v,t])=>`<option value="${v}" ${cfg.region===v?'selected':''}>${t}</option>`).join('')}</select></label>
     <label class="check-line"><input name="sync_chats" type="checkbox" ${cfg.sync_chats?'checked':''}> После поиска прочитать добавленные открытые чаты</label>
+    <label class="check-line"><input name="sync_registry" type="checkbox" ${cfg.sync_registry?'checked':''}> Обновить подтверждённые корпуса из ЕИСЖС</label><label class="check-line"><input name="sync_sheets" type="checkbox" ${cfg.sync_sheets?'checked':''}> Синхронизировать Google Таблицу</label>
     <label class="check-line"><input name="delivery" type="checkbox" ${cfg.delivery?'checked':''}> Отправлять недельный дайджест ботом в указанную группу Telegram</label>
     <p class="caption">Отправка включается только этой настройкой. При неопределённом ответе Telegram повторная отправка автоматически не выполняется.</p>
     <h3>Платные вызовы поиска и моделей</h3><div class="form-grid"><label class="field">На один запуск<input name="per_run" type="number" min="1" max="100" value="${cfg.per_run}"></label><label class="field">В сутки UTC<input name="daily" type="number" min="1" max="1000" value="${cfg.daily}"></label><label class="field">В месяц UTC<input name="monthly" type="number" min="1" max="10000" value="${cfg.monthly}"></label></div>
@@ -84,7 +85,7 @@ document.addEventListener('submit',async event=>{
     if(id==='ops-tg-login'){await api('/telegram/login',{method:'POST',body:JSON.stringify({phone:form.get('phone').trim()})});$('#tg-status').textContent='Код запрошен. Введите его ниже.';event.target.reset();}
     if(id==='ops-tg-confirm'){const r=await api('/telegram/confirm',{method:'POST',body:JSON.stringify(Object.fromEntries(form))});$('#tg-status').textContent=r.status==='password_needed'?'Нужен пароль двухэтапной проверки.':'Вход выполнен. Теперь можно читать добавленные открытые чаты.';event.target.reset();}
     if(id==='ops-weekly'){
-      const data={enabled:form.has('enabled'),delivery:form.has('delivery'),sync_chats:form.has('sync_chats'),region:form.get('region')};
+      const data={enabled:form.has('enabled'),delivery:form.has('delivery'),sync_chats:form.has('sync_chats'),sync_registry:form.has('sync_registry'),sync_sheets:form.has('sync_sheets'),region:form.get('region')};
       for(const name of ['weekday','hour','per_run','daily','monthly'])data[name]=Number(form.get(name));
       const r=await api('/operations',{method:'PUT',body:JSON.stringify(data)});$('#weekly-status').textContent=r.next_run?'Сохранено. Следующий запуск: '+dateText(r.next_run):'Сохранено. Расписание выключено.';toast('Расписание и лимиты сохранены');
     }

@@ -134,7 +134,7 @@ def render_pdf(brief: dict) -> bytes:
         story.append(p(text, **kwargs))
 
     def title(number, label, subtitle=None):
-        add(f"{number:02d}  /  {label.upper()}", size=9, color=MUTED, space=16)
+        add(f"{str(number).zfill(2)}  /  {label.upper()}", size=9, color=MUTED, space=16)
         if subtitle:
             add(subtitle, size=23, color=NAVY, space=18)
 
@@ -244,6 +244,83 @@ def render_pdf(brief: dict) -> bytes:
         )
     else:
         add("Открытые чаты пока не добавлены. Частота жалоб и динамика обсуждения неизвестны.")
+
+    registry = brief.get("registry") or {}
+    if registry.get("binding"):
+        story.append(PageBreak())
+        title("2А", "Реестр корпуса", "Даты, наблюдения и границы расчёта")
+        binding = registry["binding"]
+        section(
+            "Привязка",
+            "ID корпуса ЕИСЖС: "
+            + binding["house_id"]
+            + (
+                ". Соответствие адресу подтверждено оператором."
+                if binding["confirmed"]
+                else ". Соответствие адресу ещё не подтверждено."
+            ),
+        )
+        snapshots = registry.get("snapshots", [])
+        if snapshots:
+            last = snapshots[-1]
+            observed = (
+                datetime.fromisoformat(last["observed_at"])
+                .astimezone(ZoneInfo("Europe/Moscow"))
+                .strftime("%d.%m.%Y %H:%M МСК")
+            )
+            section("Последний сохранённый снимок", last["name"] + " · " + observed)
+            for key, label in [
+                ("commissioning", "Плановый ввод"),
+                ("transfer", "Передача"),
+                ("readiness", "Готовность, %"),
+                ("rve", "РВЭ"),
+            ]:
+                value = last.get(key)
+                if key == "rve" and not last.get("rve_checked"):
+                    value = "Наличие не проверено"
+                add(label + ": " + (str(value) if value is not None else "Нет данных"))
+            add("Источник: " + last["source_url"], size=9)
+            add(
+                "Загружено оператором; подлинность не проверена автоматически."
+                if last["imported"]
+                else "Получено через адаптер реестра.",
+                size=9,
+                color=MUTED,
+            )
+        else:
+            add("Снимков пока нет. Привязка ID не заменяет реестровые данные.")
+        changes = registry.get("changes", [])
+        section(
+            "Изменения между снимками",
+            "Показаны последние десять изменений. "
+            "Первый сохранённый срок не обязательно совпадает с первоначальным ДДУ.",
+        )
+        for change in changes[-10:]:
+            label = {
+                "commissioning": "Ввод",
+                "transfer": "Передача",
+                "readiness": "Готовность",
+                "rve": "РВЭ",
+            }[change["field"]]
+            add(f"{label}: {change['before']} → {change['after']}", size=9)
+        if not changes:
+            add("Изменений между сопоставимыми заполненными полями пока не зафиксировано.")
+        score = registry.get("assessment")
+        if score:
+            priority = {"early": "ранний риск", "watch": "наблюдение", "none": "не определён"}.get(
+                score["priority"], score["priority"]
+            )
+            certainty = {"high": "высокая", "medium": "средняя", "low": "низкая"}[
+                score["confidence"]
+            ]
+            section(
+                "Предварительная оценка",
+                f"Приоритет: {priority}. "
+                f"Уверенность: {certainty}. "
+                "Это расчёт по доступным снимкам и введённому коммерческому контексту.",
+            )
+            for limitation in score["limitations"]:
+                add(limitation, size=9, color=MUTED)
 
     story.append(PageBreak())
     title(3, "Карта работы", "От сигнала к предложению")
