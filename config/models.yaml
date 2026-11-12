@@ -14,7 +14,9 @@ benchmark_b:
   model: ''
   temperature: 0
 extract:
-  max_tokens: 4500
+  max_tokens: 8000
+  reasoning:
+    max_tokens: 1000
   model: ''
   temperature: 0
   default_model: google/gemini-2.5-flash

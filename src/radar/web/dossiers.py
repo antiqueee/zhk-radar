@@ -40,6 +40,7 @@ def source_region(value, text):
 
 def object_key(finding, source_url):
     name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(finding.name))
+    name = re.sub(r"\s+(жилые кварталы|жилой комплекс)$", "", name)
     region = normalized(finding.region)
     building = normalized(finding.building or "")
     building = re.sub(r"^корп\s", "корпус ", building)
@@ -98,10 +99,10 @@ def persist_findings(store, findings, documents, dataset="web"):
             }:
                 discarded += 1
                 continue
-            if finding.quote not in text or finding.name.casefold() not in text.casefold():
+            name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(finding.name))
+            if finding.quote not in text or name not in normalized(text):
                 discarded += 1
                 continue
-            name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(finding.name))
             quote_text = normalized(finding.quote)
             # An explicit ЖК in the quote must refer to the proposed object, not a neighbour.
             if re.search(r"\bжк\b", quote_text) and name not in quote_text:
@@ -127,6 +128,8 @@ def persist_findings(store, findings, documents, dataset="web"):
             old = db.execute("SELECT payload,revision FROM records WHERE id=?", (ident,)).fetchone()
             if old:
                 payload = json.loads(old["payload"])
+                if payload.get("verification") == "research_lead":
+                    payload.update(summary=finding.summary, verification="source_backed_claims")
             else:
                 payload = dict(
                     id=ident,
@@ -200,8 +203,20 @@ def persist_findings(store, findings, documents, dataset="web"):
                     )
             else:
                 db.execute(
-                    "INSERT INTO records(id,dataset,payload,updated_at) VALUES(?,?,?,?)",
-                    (ident, dataset, json.dumps(payload, ensure_ascii=False), now()),
+                    "INSERT INTO records(id,dataset,payload,situation,updated_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        ident,
+                        dataset,
+                        json.dumps(payload, ensure_ascii=False),
+                        "после_заселения"
+                        if finding.event_type == "defects"
+                        or set(finding.topics) & {"качество_ук", "протечки"}
+                        else "приёмка"
+                        if "приёмка" in finding.topics
+                        else "сроки",
+                        now(),
+                    ),
                 )
                 added += 1
             if count:

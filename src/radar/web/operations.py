@@ -27,9 +27,9 @@ class OperationsSettings(BaseModel):
     screen_model_calls: int = Field(default=5, ge=0, le=5)
     sync_registry: bool = False
     sync_sheets: bool = False
-    per_run: int = Field(default=20, ge=1, le=100)
-    daily: int = Field(default=60, ge=1, le=1000)
-    monthly: int = Field(default=500, ge=1, le=10000)
+    per_run: int = Field(default=120, ge=1, le=200)
+    daily: int = Field(default=360, ge=1, le=1000)
+    monthly: int = Field(default=2000, ge=1, le=10000)
 
 
 def initialize(store):
@@ -89,6 +89,28 @@ def save(store, cfg):
 
 class BudgetExceeded(ValueError):
     pass
+
+
+def remaining_calls(store, run_id):
+    cfg = settings(store)
+    stamp = now()
+    with store.connect() as db:
+        used = [
+            db.execute("SELECT count(*) FROM api_calls WHERE run_id=?", (run_id,)).fetchone()[0],
+            db.execute(
+                "SELECT count(*) FROM api_calls WHERE created_at>=?", (stamp[:10],)
+            ).fetchone()[0],
+            db.execute(
+                "SELECT count(*) FROM api_calls WHERE created_at>=?", (stamp[:7],)
+            ).fetchone()[0],
+        ]
+    return max(
+        0,
+        min(
+            cfg[key] - count
+            for key, count in zip(("per_run", "daily", "monthly"), used, strict=True)
+        ),
+    )
 
 
 def reserve_call(store, run_id, service):

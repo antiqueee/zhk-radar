@@ -62,6 +62,19 @@ def sources_for(payload):
             "kind": "operator_supplied",
             "url": e["url"],
         }
+    for answer in (payload.get("followup") or {}).get("answers", []):
+        ident = answer["source_id"]
+        if ident in sources:
+            if answer["quote"] not in sources[ident]["text"]:
+                sources[ident]["text"] += "\n" + answer["quote"]
+        else:
+            sources[ident] = {
+                "id": ident,
+                "text": answer["quote"],
+                "topics": [],
+                "kind": answer["kind"],
+                "url": answer["url"],
+            }
     for i, e in enumerate((payload.get("chat_stats") or {}).get("examples", [])):
         ident = "chat:" + str(i)
         sources[ident] = {
@@ -69,7 +82,7 @@ def sources_for(payload):
             "text": redact(e["text"], []),
             "topics": [e["topic"]],
             "kind": "chat",
-            "url": None,
+            "url": e.get("url"),
         }
     return list(sources.values())
 
@@ -82,8 +95,11 @@ def write_model(client, cfg, model, payload, sources, matches, criticism):
         "Верни каждый предложенный продукт один раз. source_ids только из sources: "
         "они должны объяснять именно боль, на которую направлены задачи. "
         "Рекомендации формулируй как предлагаемые действия, не как факты об объекте. "
+        "Технические ID источников пиши только в source_ids, не вставляй их в текст продукта. "
         "rationale объясняет связь с конкретной цитатой, границей корпуса и ограничениями. "
-        "tasks: 3-6 конкретных шагов по 30-450 знаков. result — передаваемые материалы, "
+        "Это компактное предложение на одной странице. rationale до 260 знаков. "
+        "tasks: ровно 3 конкретных шага по 30-130 знаков. result до 180 знаков — материалы, "
+        "measurement до 140 знаков. Называй конкретную проблему, а не общие этапы агентства. "
         "measurement — способ замера, без вымышленных целевых процентов. "
         "Не копируй цитаты из чатов в задачи, результат и measurement, не включай контакты "
         "или данные жителей. case_ids только из cases, если уместно; кейс не гарантия. "
@@ -189,7 +205,7 @@ def generate(store, ident, run_id, writer=write_model, critic=review.review_mode
         for attempt in range(2):
             raw, _ = cached(
                 store,
-                ["author-v1", base_hash, author, sources, matches, criticism],
+                ["author-v2", base_hash, author, sources, matches, criticism],
                 lambda criticism=criticism: writer(
                     client, cfg, author, payload, sources, matches, criticism
                 ).model_dump(),
@@ -223,7 +239,18 @@ def generate(store, ident, run_id, writer=write_model, critic=review.review_mode
                 for issue in checked.issues
                 for i in issue.source_ids
             ):
-                raise ValueError("Проверяющая модель сослалась на неизвестный источник")
+                # A failed critic cannot approve anything, but must not destroy a valid draft.
+                checked = review.ReviewResult(
+                    verdict="manual",
+                    issues=[
+                        review.Issue(
+                            block="Автоматическая проверка",
+                            severity="blocker",
+                            reason="Проверка не завершена: модель указала неизвестный источник. "
+                            "Сохранён черновик; перед передачей нужна проверка аналитика.",
+                        )
+                    ],
+                )
             # Contradictory passed + blocker cannot become an accepted draft.
             if checked.verdict == "passed" and checked.issues:
                 checked = checked.model_copy(

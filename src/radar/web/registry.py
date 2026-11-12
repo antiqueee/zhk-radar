@@ -5,7 +5,7 @@ import json
 import re
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -19,6 +19,12 @@ from radar.web.store import now
 
 DOM = "https://xn--80az8a.xn--d1aqf.xn--p1ai"
 API = DOM + "/%D1%81%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D1%8B/api/kn/object/"
+ERZ_KEYS = {
+    "moskva": "143443001",
+    "moskovskaya-oblast": "143449001",
+    "sankt-peterburg": "144781001",
+    "leningradskaya-oblast": "143275001",
+}
 
 
 class RegistrySnapshot(BaseModel):
@@ -374,16 +380,25 @@ def parse_erz(html):
 
 def fetch_erz(store, region="moskva", transport=public_get):
     initialize(store)
-    if region not in {"moskva", "moskovskaya-oblast", "sankt-peterburg", "leningradskaya-oblast"}:
+    if region not in ERZ_KEYS:
         raise ValueError("Неизвестный регион ЕРЗ")
-    url = "https://erzrf.ru/top-zastroyshchikov/" + region + "?topType=0"
+    url = (
+        "https://erzrf.ru/top-zastroyshchikov/"
+        + region
+        + f"?region={region}&regionKey={ERZ_KEYS[region]}&topType=0"
+    )
     status, headers, body = transport(url)
     if status != 200:
         raise ValueError(f"ЕРЗ недоступен: HTTP {status}")
     if len(body) > 2_000_000:
         raise ValueError("ЕРЗ: страница превышает лимит")
     rows = parse_erz(body.decode("utf-8"))
+    # The slug alone silently returns Russia-wide values. Require the regional
+    # key in the actual portfolio links rendered by ERZ, not just our request.
+    if any(parse_qs(urlsplit(r["url"]).query).get("regionKey") != [ERZ_KEYS[region]] for r in rows):
+        raise ValueError("ЕРЗ не подтвердил регион таблицы; показатели не сохранены")
     stamp = now()
+    rows = [{**r, "source_url": url, "observed_at": stamp, "scope_verified": True} for r in rows]
     with store.connect() as db:
         for row in rows:
             payload = {**row, "source_url": url, "observed_at": stamp}

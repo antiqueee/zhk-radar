@@ -231,8 +231,8 @@ def query_documents(store, query, run_id, client, reader=fetch_page, max_pages=4
     cfg = configuration(store.root)
     rows, hit = cached(
         store,
-        ["followup-search-v1", now()[:10], query],
-        lambda: yandex(client, cfg, query, "month"),
+        ["followup-search-v2", now()[:10], query],
+        lambda: yandex(client, cfg, query, "all"),
         run_id,
         "search",
     )
@@ -285,8 +285,10 @@ def research(
         raise ValueError("Для исследования нужны ключи поиска и модели")
     scope = record["name"] + " " + record["region"] + " " + (record.get("building") or "")
     questions = [
-        scope + " официальный ответ застройщика передача ключей ввод РВЭ",
-        scope + " клиентский сервис руководитель контакты PR вакансии",
+        scope + " проектная декларация первоначальный срок новый срок ввод передача ключей",
+        scope + " отзывы дольщиков форум жалобы приемка недостатки",
+        scope + " официальный сайт ход строительства ответ застройщика сроки",
+        scope + " телеграм чат жителей соседей",
     ]
     owns = client is None
     client = client or httpx.Client(timeout=90)
@@ -315,17 +317,30 @@ def research(
 
         answers = []
         if documents and extractor is extract:
-            response, _ = cached(
-                store,
-                ["research-answers-v1", model, scope, documents],
-                lambda: extract_answers(client, cfg, model, record, documents).model_dump(),
-                run_id,
-                "model",
-            )
-            answers = validate_answers(Answers.model_validate(response), record, documents)
+            try:
+                response, _ = cached(
+                    store,
+                    ["research-answers-v3", model, scope, documents],
+                    lambda: extract_answers(client, cfg, model, record, documents).model_dump(),
+                    run_id,
+                    "model",
+                )
+            except ValueError as exc:
+                response = {"answers": []}
+                errors.append({"stage": "answer", "detail": str(exc)})
+            if response.get("rejected"):
+                errors.append(
+                    {"stage": "answer", "detail": "Некоторые ответы не прошли проверку схемы"}
+                )
+            # One bad quote must not discard all valid answers and collected pages.
+            for answer in Answers.model_validate(response).answers:
+                try:
+                    answers.extend(validate_answers(Answers(answers=[answer]), record, documents))
+                except ValueError as exc:
+                    errors.append({"stage": "answer", "detail": str(exc)})
         value = {
             "answers": answers,
-            "status": "completed",
+            "status": "partial" if errors else "completed",
             "questions": questions,
             "documents": [
                 {
@@ -366,10 +381,19 @@ def complete_scan(
     shortlist=8,
 ):
     ids = list(result["record_ids"])
+    regions = set(result.get("coverage", {}).get("regions", []))
     initial = rank(store, ids)
     from radar.web.screening import screen
 
-    queue = [c for c in initial if c["needs_research"]][:top]
+    # Missing date/score is a reason to investigate, not to skip chats entirely.
+    seed_ids = set(result.get("seed_ids", [])[:2])
+    queue = sorted(
+        [c for c in initial if not c["excluded"]],
+        key=lambda c: (
+            c["record_id"] not in seed_ids,
+            store.get(c["record_id"])["region"] in {"Не установлен", "Не указан", "Россия", ""},
+        ),
+    )[:top]
     chat_result = screen(
         store,
         [c["record_id"] for c in queue],
@@ -393,7 +417,13 @@ def complete_scan(
         try:
             row = researcher(store, candidate["record_id"], run_id, cancelled=cancelled)
             enriched.append({"record_id": candidate["record_id"], **row})
-            ids = list(dict.fromkeys([*ids, *row.get("related_ids", [])]))
+            related = [
+                ident
+                for ident in row.get("related_ids", [])
+                if not regions
+                or store.get(ident)["region"] in regions | {"Не установлен", "Россия", ""}
+            ]
+            ids = list(dict.fromkeys([*ids, *related]))
         except ValueError as exc:
             errors.append(
                 {"stage": "research", "detail": str(exc), "record_id": candidate["record_id"]}

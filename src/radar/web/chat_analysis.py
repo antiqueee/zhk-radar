@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from radar.briefs.offers import load_offers
 from radar.web.chats import initialize
-from radar.web.configuration import configuration, model_config
+from radar.web.configuration import configuration, model_config, model_options
 from radar.web.discovery import call_json
 from radar.web.model_output import parse_model_json
 from radar.web.operations import reserve_call
@@ -41,8 +41,7 @@ def classify(client, cfg, model, messages, topics):
         {"Authorization": "Bearer " + cfg["OPENROUTER_API_KEY"]},
         {
             "model": model["model"],
-            "temperature": 0,
-            "max_tokens": 6000,
+            **model_options({**model, "max_tokens": 10000}),
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -54,7 +53,7 @@ def classify(client, cfg, model, messages, topics):
                     + ", ".join(sorted(topics))
                     + ". sentiment: -2 резко негативное, -1 негативное, "
                     "0 нейтральное, 1 позитивное, 2 резко позитивное; null если неясно. "
-                    "quote — непрерывная дословная цитата из этого сообщения, обосновывающая тему. "
+                    "quote — короткая непрерывная дословная цитата до 80 знаков из сообщения. "
                     "Не угадывай скрытый смысл. Ответ только JSON по схеме: "
                     + json.dumps(Labels.model_json_schema(), ensure_ascii=False),
                 },
@@ -89,6 +88,7 @@ def analyze(
     max_messages=120,
     text_budget=None,
     newest_first=False,
+    allow_partial=False,
 ):
     if not 1 <= max_messages <= 120 or (text_budget is not None and text_budget < 10000):
         raise ValueError("Некорректный лимит разметки")
@@ -144,7 +144,7 @@ def analyze(
             t for o in load_offers(store.root / "config/offers.yaml").offers for t in o.pain_topics
         }
         client = client or httpx.Client(timeout=httpx.Timeout(90, connect=15))
-        done, cached, calls = 0, 0, 0
+        done, cached, calls, rejected = 0, 0, 0, 0
         run = run_id or uuid4().hex
         for offset in range(0, min(len(messages), 120), 60):
             batch = messages[offset : offset + 60]
@@ -169,20 +169,27 @@ def analyze(
                         (key, labels.model_dump_json(), now()),
                     )
             indexes = [label.index for label in labels.messages]
-            if sorted(indexes) != list(range(len(batch))):
+            if sorted(indexes) != list(range(len(batch))) and not allow_partial:
                 raise ValueError(
                     "Модель пропустила или повторила сообщения; разметка группы не применена"
                 )
+            valid = []
             for label in labels.messages:
                 if (
-                    label.topic not in topics | {"не_размечено"}
+                    label.index >= len(batch)
+                    or indexes.count(label.index) != 1
+                    or label.topic not in topics | {"не_размечено"}
                     or label.quote not in batch[label.index]["text"]
                 ):
+                    if allow_partial:
+                        rejected += 1
+                        continue
                     raise ValueError(
                         "Разметка не подтверждена цитатой или содержит неизвестную тему"
                     )
+                valid.append(label)
             with store.connect() as db:
-                for label in labels.messages:
+                for label in valid:
                     message = batch[label.index]
                     keys = (record_id, message["chat_id"], message["message_id"])
                     db.execute(
@@ -196,7 +203,8 @@ def analyze(
                     ).rowcount
         return {
             "labelled": done,
-            "more": available > len(messages),
+            "rejected": rejected,
+            "more": available > len(messages) or bool(rejected),
             "characters": size,
             "external_requests": calls,
             "cache_hits": cached,

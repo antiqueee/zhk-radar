@@ -81,6 +81,12 @@ class Route(Flowable):
 
 
 def render_pdf(brief: dict) -> bytes:
+    from radar.web.executive_pdf import render
+
+    return render(brief)
+
+
+def render_detailed_pdf(brief: dict) -> bytes:
     brief = dict(brief)
     if not brief.get("building"):
         match = re.search(r"(?:корпус|дом)\s+[\w./-]+", brief["name"], re.I)

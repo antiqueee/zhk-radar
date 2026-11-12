@@ -14,7 +14,12 @@ from radar.web.store import Store, now
 
 
 @pytest.fixture
-def store(tmp_path):
+def store(tmp_path, monkeypatch):
+    from radar.web import prospecting
+
+    monkeypatch.setattr(
+        prospecting, "seeds", lambda *a: {"queries": [], "developers": [], "errors": []}
+    )
     shutil.copytree(Path("config"), tmp_path / "config")
     save_settings(
         tmp_path,

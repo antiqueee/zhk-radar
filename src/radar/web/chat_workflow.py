@@ -81,6 +81,7 @@ def discover_chats(store, ident, run_id, client=None, searcher=yandex):
                         "url": url,
                         "source_url": source["url"],
                         "title": source["title"],
+                        "context_text": source["text"],
                         "found_at": now(),
                         "verified": False,
                         "relevance": (10 if name in normalized(source["title"]) else 0)
@@ -101,6 +102,54 @@ def discover_chats(store, ident, run_id, client=None, searcher=yandex):
                     (ident, url, json.dumps(payload)),
                 )
         return {"candidates": candidates(store, ident), "searched": True}
+    finally:
+        if owns:
+            client.close()
+
+
+def corroborate(store, record, candidate, run_id, client=None, searcher=yandex, reader=None):
+    """Find an independent public mention of the exact chat URL + object + location."""
+    from radar.web.screening import matches
+    from radar.web.sources import fetch_page, load_page
+
+    cfg = configuration(store.root)
+    url = candidate["url"]
+    query = f'"{url.rsplit("/", 1)[-1]}" {record["name"]} {record["region"]}'
+    owns = client is None
+    client = client or httpx.Client(timeout=60)
+    try:
+        rows, _ = cached(
+            store,
+            ["chat-binding-v2", now()[:10], query],
+            lambda: searcher(client, cfg, query, "all"),
+            run_id,
+            "search",
+        )
+        for row in rows:
+            text = row["title"] + " " + row["text"]
+            if url.casefold() not in (row["url"] + " " + text).casefold():
+                continue
+            ok, _ = matches(record, {"public": True, "group": True, "title": text})
+            if ok:
+                return {"context_text": text, "source_url": row["url"], "verified_url": url}
+        for row in rows[:3]:
+            page, _ = load_page(store, row["url"], reader or fetch_page, require_links=True)
+            if page.status != "loaded":
+                continue
+            name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(record["name"]))
+            if name not in normalized(page.title):
+                continue  # A directory of unrelated projects cannot bind a single chat.
+            links = []
+            for link in page.links or []:
+                try:
+                    links.append(TelegramLink(url=link).url)
+                except ValueError:
+                    pass
+            text = page.title + " " + page.text
+            ok, _ = matches(record, {"public": True, "group": True, "title": text})
+            if url in links and ok:
+                return {"context_text": text, "source_url": row["url"], "verified_url": url}
+        return None
     finally:
         if owns:
             client.close()

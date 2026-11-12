@@ -1,8 +1,8 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const labels = {new:'Новый',review:'На проверке',inwork:'В работе',proposal:'КП отправлено',meeting:'Встреча',closed:'Закрыт',later:'Отложен',rejected:'Не интересно'};
-let state = {dataset:localStorage.getItem('megapolis-dataset') || 'imported',records:[],offers:[],selected:null,page:1,filter:''};
-if (!['web','imported','demo'].includes(state.dataset)) state.dataset = 'imported';
+let state = {dataset:localStorage.getItem('megapolis-dataset') || 'web',records:[],offers:[],selected:null,page:1,filter:'',runIds:null};
+if (!['web','imported','demo'].includes(state.dataset)) state.dataset = 'web';
 let refreshId = 0;
 async function api(path, options={}) {
   const response = await fetch('/api'+path, {...options,headers:{'X-Radar-Local':'1',...(options.body && !(options.body instanceof FormData) ? {'Content-Type':'application/json'} : {}),...options.headers}});
@@ -14,18 +14,19 @@ function toast(text) {$('#toast').textContent=text;$('#toast').style.display='bl
 function safeURL(value) {try {const u=new URL(value);return ['https:','http:'].includes(u.protocol)?esc(u.href):'#';}catch{return '#';}}
 function host(value) {try{return new URL(value).hostname;}catch{return 'Источник';}}
 function dateText(value) {return new Date(value).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});}
-function filtered() {const q=state.filter.toLocaleLowerCase('ru');return state.records.filter(r=>(!r.blocked||$('#show-blocked').checked)&&`${r.name} ${r.developer} ${r.region} ${r.summary}`.toLocaleLowerCase('ru').includes(q));}
+function filtered() {const q=state.filter.toLocaleLowerCase('ru');return state.records.filter(r=>(!state.runIds||state.runIds.includes(r.id))&&(!r.blocked||$('#show-blocked').checked)&&`${r.name} ${r.developer} ${r.region} ${r.summary}`.toLocaleLowerCase('ru').includes(q));}
 function renderRecords() {
   const all=filtered(), pages=Math.max(1,Math.ceil(all.length/10));state.page=Math.min(state.page,pages);
-  $('#count').textContent=state.records.length;
+  $('#count').textContent=state.runIds?state.records.filter(r=>state.runIds.includes(r.id)).length:state.records.length;
   $('#filter-count').textContent=state.filter?`Найдено: ${all.length}`:'';
   $('#data-note').textContent={imported:'Из ваших таблиц. Сведения ещё нужно сверить с источниками.',demo:'Вымышленные примеры — попробуйте весь сценарий.',web:'Найденные публикации. Выводы требуют проверки первоисточников.'}[state.dataset];
-  $('#records').innerHTML=all.slice((state.page-1)*10,state.page*10).map(r=>`<article class="record"><div><button class="record-name" data-open="${esc(r.id)}">${esc(r.name)}${r.building?' · '+esc(r.building):''}</button><p class="record-meta">${esc(r.developer)}<br>${esc(r.region)}</p></div><div class="signal-wrap"><p class="signal">${esc(r.summary)}</p><span class="tag">${r.dataset==='demo'?'Демо-пример':r.dataset==='web'?'Сигнал из поиска':'Из материалов агентства'}</span></div><div class="record-actions">${r.blocked?'<span class="tag">В стоп-листе</span>':`<button class="button" data-pdf="${esc(r.id)}">↓ PDF-разбор</button>`}<button class="more" data-open="${esc(r.id)}">Подробнее и чаты</button></div></article>`).join('') || `<div class="empty"><h3>${state.filter?'Ничего не найдено':'Здесь появятся найденные объекты'}</h3><p>${state.filter?'Попробуйте другое название ЖК или девелопера.':'Выберите регион и нажмите «Найти объекты». Для первого поиска добавьте ключи в подключениях.'}</p>${state.filter?'':'<button class="button" data-action="settings">Настроить подключения</button>'}</div>`;
+  $('#records').innerHTML=all.slice((state.page-1)*10,state.page*10).map(r=>`<article class="record"><div><button class="record-name" data-open="${esc(r.id)}">${esc(r.name)}${r.building?' · '+esc(r.building):''}</button><p class="record-meta">${esc(r.developer)}<br>${esc(r.region)}</p></div><div class="signal-wrap"><p class="signal">${esc(r.summary)}</p><span class="tag">${r.dataset==='demo'?'Демо-пример':r.verification==='research_lead'?'Исходный объект · проверяем':r.dataset==='web'?'Сигнал из поиска':'Из материалов агентства'}</span></div><div class="record-actions">${r.blocked?'<span class="tag">В стоп-листе</span>':`<button class="button" data-pdf="${esc(r.id)}">↓ PDF · 2 страницы</button>`}<button class="more" data-open="${esc(r.id)}">Открыть разбор</button></div></article>`).join('') || `<div class="empty"><h3>${state.filter?'Ничего не найдено':'Здесь появятся найденные объекты'}</h3><p>${state.filter?'Попробуйте другое название ЖК или девелопера.':'Выберите регион и нажмите «Найти объекты». Для первого поиска добавьте ключи в подключениях.'}</p>${state.filter?'':'<button class="button" data-action="settings">Настроить подключения</button>'}</div>`;
   $('#pagination').innerHTML=pages>1?`<button class="button quiet" data-action="prev" ${state.page===1?'disabled':''}>← Назад</button><span>${state.page} из ${pages}</span><button class="button quiet" data-action="next" ${state.page===pages?'disabled':''}>Далее →</button>`:'';
+  renderDevelopers();
   applyRole();
 }
 async function refresh() {const ticket=++refreshId;const dataset=state.dataset;const records=await api('/records?dataset='+dataset);if(ticket!==refreshId)return;state.records=records.filter(r=>r.granularity!=='developer');$('#dataset').value=dataset;renderRecords();applyRole();}
-async function chooseDataset(dataset) {state.dataset=dataset;state.page=1;state.filter='';$('#filter').value='';localStorage.setItem('megapolis-dataset',dataset);await refresh();}
+async function chooseDataset(dataset,ids=null) {state.runIds=ids;state.dataset=dataset;state.page=1;state.filter='';$('#filter').value='';localStorage.setItem('megapolis-dataset',dataset);await refresh();}
 function chatHTML(stats) {
   if (!stats) return '<p>Добавьте выгрузку открытого чата, чтобы увидеть частые темы и уточнить разбор.</p>';
   return `<div class="chat-stats"><span><b>${stats.messages_30d}</b>сообщений за 30 дней</span><span><b>${stats.authors_30d}</b>участников</span><span><b>${stats.negative_share===null?'—':stats.negative_share+'%'}</b>негативных из размеченных</span></div><div class="topics">${stats.topics.slice(0,5).map(([t,n])=>`<span>${esc(t.replaceAll('_',' '))} · ${n}</span>`).join('')}</div><p class="caption">${esc(stats.method)}</p>`;
@@ -51,31 +52,34 @@ function renderJob(job) {
   const warnings=r?.errors?.length?`<details><summary>Не все источники обработаны (${r.errors.length})</summary>${r.errors.slice(0,6).map(e=>`<p>${esc(e.detail)}${e.url?' · '+esc(host(e.url)):''}</p>`).join('')}</details>`:'';
   const chat=r?.chat_screening;
   const chatSummary=chat?`<p class="muted">${esc(chat.note)}${chat.records.length?` · Прочитано сообщений: ${chat.records.reduce((n,x)=>n+x.chats.reduce((s,c)=>s+c.read,0),0)} · размечено: ${chat.records.reduce((n,x)=>n+x.labelled,0)}.`:''}</p>${chat.records.length?`<details><summary>Что получилось по чатам</summary>${chat.records.map(x=>`<p><b>${esc(x.name)}</b> · ${x.chats.length?'чат прочитан':'подходящий чат не прочитан'} · размечено ${x.labelled}${x.analysis_disabled?' · модельный анализ выключен':''}${x.more_unlabelled?' · остались неразмеченные сообщения':''}${x.chats.some(c=>c.partial)?' · история прочитана частично':''}</p>${x.skipped.map(c=>`<p class="caption">${esc(c.reason)}</p>`).join('')}`).join('')}</details>`:''}`:'';
+  const coverage=r?.coverage;
+  const coverageHTML=coverage?`<p class="caption">Охват: ${coverage.regions.length} регионов · ${coverage.queries_completed} поисковых запросов · ${coverage.developers.length} строк ЕРЗ. ${esc(coverage.note)}</p>`:'';
   const limits=r&&(r.skipped_pages||r.skipped_batches)?`<p class="muted">Лимит прогона: отложено страниц ${r.skipped_pages}, групп текстов ${r.skipped_batches}. Это ограниченный обзор.</p>`:'';
-  $('#scan-status').innerHTML=`<div class="job-status ${job.status==='failed'?'error':''}"><div class="job-top"><span>${running?'<span class="spinner"></span>':''}${esc(message)}</span>${running?`<button class="button quiet" data-action="cancel-scan" ${job.cancel_requested?'disabled':''}>Остановить</button>`:['failed','interrupted','cancelled'].includes(job.status)?'<button class="button" data-action="retry-scan">Повторить</button>':`<button class="button quiet" data-action="show-scan">Показать объекты</button>`}</div>${running?`<progress value="${job.percent}" max="100" aria-label="Прогресс поиска"></progress><p class="muted">${job.percent}% · Можно закрыть страницу и вернуться. Приложение должно оставаться запущенным.</p>`:''}${warnings}${chatSummary}${limits}</div>`;
+  $('#scan-status').innerHTML=`<div class="job-status ${job.status==='failed'?'error':''}"><div class="job-top"><span>${running?'<span class="spinner"></span>':''}${esc(message)}</span>${running?`<button class="button quiet" data-action="cancel-scan" ${job.cancel_requested?'disabled':''}>Остановить</button>`:['failed','interrupted','cancelled'].includes(job.status)?'<button class="button" data-action="retry-scan">Повторить</button>':`<button class="button quiet" data-action="show-scan">Показать объекты</button>`}</div>${running?`<progress value="${job.percent}" max="100" aria-label="Прогресс поиска"></progress><p class="muted">${job.percent}% · Можно закрыть страницу и вернуться. Приложение должно оставаться запущенным.</p>`:''}${coverageHTML}${warnings}${chatSummary}${limits}</div>`;
 }
 async function watchJob(id) {
   clearTimeout(pollTimer);
   try {
     const job=await api('/jobs/'+id);renderJob(job);
     if(!terminalJobs.has(job.status)) pollTimer=setTimeout(()=>watchJob(id),1200);
-    else if(job.result) await chooseDataset(job.result.dataset);
+    else if(job.result) await chooseDataset(job.result.dataset,job.result.record_ids);
   } catch(err) {
     $('#scan-status').innerHTML='<div class="notice">Связь с приложением прервалась. Повторно проверяю состояние поиска…</div>';
     pollTimer=setTimeout(()=>watchJob(id),3000);
   }
 }
 async function startScan(mode='live', request=null) {
-  const job=await api('/search',{method:'POST',body:JSON.stringify(request || {region:$('#search-region').value,period:$('#search-period').value,mode,enrich:mode==='live'})});
+  const job=await api('/search',{method:'POST',body:JSON.stringify(request || {region:$('#search-region').value,period:$('#search-period').value,target:$('#search-target').value.trim(),mode,enrich:mode==='live'})});
   renderJob(job);await watchJob(job.id);
 }
 async function openRecord(id) {
   const r=await api('/records/'+id);state.selected=r;
   const chats=await api('/chats?dataset='+r.dataset);const stats=chats.find(c=>c.record_id===id);
   const topics=[...new Set(state.offers.flatMap(o=>o.pain_topics))].sort();
-  $('#detail-content').innerHTML=`<div class="dialog-header"><button class="close" data-action="close-detail" aria-label="Закрыть карточку">×</button><span class="eyebrow">${r.dataset==='demo'?'ДЕМО-ПРИМЕР':'РАЗБОР ОБЪЕКТА'}</span><h2 id="detail-title">${esc(r.name)}${r.building?' · '+esc(r.building):''}</h2><p>${esc(r.developer)} · ${esc(r.region)}</p></div><div class="dialog-body"><div class="section"><h3>Что происходит</h3><div class="detail-signal">${esc(r.summary)}</div><div class="source-links">${r.urls.slice(0,5).map((url,i)=>`<a href="${safeURL(url)}" target="_blank" rel="noopener noreferrer">${i+1}. ${esc(host(url))} ↗</a>`).join('')||'<span class="muted">В этом демо-примере нет реальных источников</span>'}</div></div>${researchHTML(r.dossier)}<div class="pdf-action"><button class="button primary" data-pdf="${esc(r.id)}">↓ Получить PDF-разбор</button><p>Подробный отчёт: ситуация, схемы,<br>продукты под ЖК и план на 30 дней.</p></div><div id="pdf-result"></div><section class="chat-box"><h3>Уточнить по чатам <span class="status-label">По желанию</span></h3>${chatHTML(stats)}<div id="telegram-links"></div><div class="chat-actions"><button class="button" data-action="chat-import">Добавить выгрузку чата</button>${r.dataset==='demo'?'<button class="button quiet" data-action="chat-demo">Попробовать на примере</button>':''}<a href="/api/chats/example" download="chat-example.json">Образец JSON</a></div><p class="caption">Только открытые чаты. Вход в рабочий аккаунт — в «Подключениях». Для тематического разбора нажмите «Разобрать сообщения моделью». Результат модели требует проверки.</p>${stats?'<button class="button primary" data-pdf="'+esc(r.id)+'">Обновить PDF с данными чата</button> <button class="button" data-op="analyze-chat">Разобрать сообщения моделью</button>':''}</section><details><summary>Уточнить ситуацию и предложение</summary><form id="decision-form"><div class="form-grid"><label class="field">Тип ситуации<select name="situation">${['сроки','приёмка','после_заселения'].map(s=>`<option value="${s}" ${r.situation===s?'selected':''}>${s.replaceAll('_',' ')}</option>`).join('')}</select></label><label class="field">Стадия<select name="stage">${['Ранний риск','Первые жалобы','Открытый конфликт','Эскалация','Восстановление'].map((s,i)=>`<option value="${i}" ${r.stage===i?'selected':''}>${s}</option>`).join('')}</select></label></div><label class="field">Ваше уточнение<textarea name="note" maxlength="1500" placeholder="Что важно учесть при подготовке предложения">${esc(r.note)}</textarea></label><div class="muted">Какие проблемы обсуждают</div><div class="checks">${topics.map(t=>`<label><input type="checkbox" name="topic" value="${esc(t)}" ${r.topics.includes(t)?'checked':''}>${esc(t.replaceAll('_',' '))}</label>`).join('')}</div><label class="field">Статус работы<select name="status">${Object.entries(labels).map(([k,v])=>`<option value="${k}" ${r.status===k?'selected':''}>${v}</option>`).join('')}</select></label><label class="field">Причина отказа, если есть<input name="refusal_reason" maxlength="500" value="${esc(r.refusal_reason||'')}"></label><button class="button" type="submit">Сохранить уточнения</button></form></details><details><summary>Источники и что проверить</summary><p>${esc(r.check)}</p><p class="muted">${esc(r.file)} · ${esc(r.sheet)} · ${esc(r.row)}</p>${r.urls.map(url=>`<p><a target="_blank" rel="noopener noreferrer" href="${safeURL(url)}">${esc(host(url))} ↗</a></p>`).join('')}<div class="proof">${r.evidence.map(e=>`<blockquote>«${esc(e.quote)}»<br><a href="${safeURL(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.title)}</a></blockquote>`).join('')}</div><form id="proof-form"><h3>Добавить подтверждение</h3><label class="field">Название источника<input name="title" required maxlength="160"></label><label class="field">Ссылка<input name="url" type="url" required></label><label class="field">Текст источника<textarea name="source_text" required maxlength="100000"></textarea></label><label class="field">Дословная цитата<textarea name="quote" required maxlength="500"></textarea></label><button class="button" type="submit">Сохранить цитату</button></form><details><summary>Все поля исходной строки</summary><dl class="raw">${Object.entries(r.claims).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details></details><details><summary>История изменений</summary><div class="timeline">${r.events.map(e=>`<div>${dateText(e.created_at)} · ${esc(e.detail)}</div>`).join('')||'Изменений пока нет'}</div></details></div>`;
+  $('#detail-content').innerHTML=`<div class="dialog-header"><button class="close" data-action="close-detail" aria-label="Закрыть карточку">×</button><span class="eyebrow">${r.dataset==='demo'?'ДЕМО-ПРИМЕР':'РАЗБОР ОБЪЕКТА'}</span><h2 id="detail-title">${esc(r.name)}${r.building?' · '+esc(r.building):''}</h2><p>${esc(r.developer)} · ${esc(r.region)}</p></div><div class="dialog-body"><div class="section"><h3>Что происходит</h3><div class="detail-signal">${esc(r.summary)}</div><div class="source-links">${r.urls.slice(0,5).map((url,i)=>`<a href="${safeURL(url)}" target="_blank" rel="noopener noreferrer">${i+1}. ${esc(host(url))} ↗</a>`).join('')||'<span class="muted">В этом демо-примере нет реальных источников</span>'}</div></div>${researchHTML(r.dossier)}<div class="pdf-action"><button class="button primary" data-pdf="${esc(r.id)}">↓ Получить PDF-разбор</button><p>Две страницы: проблема и основания,<br>точечное предложение и первые действия.</p></div><div id="pdf-result"></div><section class="chat-box"><h3>Уточнить по чатам <span class="status-label">По желанию</span></h3>${chatHTML(stats)}<div id="telegram-links"></div><div class="chat-actions"><button class="button" data-action="chat-import">Добавить выгрузку чата</button>${r.dataset==='demo'?'<button class="button quiet" data-action="chat-demo">Попробовать на примере</button>':''}<a href="/api/chats/example" download="chat-example.json">Образец JSON</a></div><p class="caption">Только открытые чаты. Вход в рабочий аккаунт — в «Подключениях». Для тематического разбора нажмите «Разобрать сообщения моделью». Результат модели требует проверки.</p>${stats?'<button class="button primary" data-pdf="'+esc(r.id)+'">Обновить PDF с данными чата</button> <button class="button" data-op="analyze-chat">Разобрать сообщения моделью</button>':''}</section><details><summary>Уточнить ситуацию и предложение</summary><form id="decision-form"><div class="form-grid"><label class="field">Тип ситуации<select name="situation">${['сроки','приёмка','после_заселения'].map(s=>`<option value="${s}" ${r.situation===s?'selected':''}>${s.replaceAll('_',' ')}</option>`).join('')}</select></label><label class="field">Стадия<select name="stage">${['Ранний риск','Первые жалобы','Открытый конфликт','Эскалация','Восстановление'].map((s,i)=>`<option value="${i}" ${r.stage===i?'selected':''}>${s}</option>`).join('')}</select></label></div><label class="field">Ваше уточнение<textarea name="note" maxlength="1500" placeholder="Что важно учесть при подготовке предложения">${esc(r.note)}</textarea></label><div class="muted">Какие проблемы обсуждают</div><div class="checks">${topics.map(t=>`<label><input type="checkbox" name="topic" value="${esc(t)}" ${r.topics.includes(t)?'checked':''}>${esc(t.replaceAll('_',' '))}</label>`).join('')}</div><label class="field">Статус работы<select name="status">${Object.entries(labels).map(([k,v])=>`<option value="${k}" ${r.status===k?'selected':''}>${v}</option>`).join('')}</select></label><label class="field">Причина отказа, если есть<input name="refusal_reason" maxlength="500" value="${esc(r.refusal_reason||'')}"></label><button class="button" type="submit">Сохранить уточнения</button></form></details><details><summary>Источники и что проверить</summary><p>${esc(r.check)}</p><p class="muted">${esc(r.file)} · ${esc(r.sheet)} · ${esc(r.row)}</p>${r.urls.map(url=>`<p><a target="_blank" rel="noopener noreferrer" href="${safeURL(url)}">${esc(host(url))} ↗</a></p>`).join('')}<div class="proof">${r.evidence.map(e=>`<blockquote>«${esc(e.quote)}»<br><a href="${safeURL(e.url)}" target="_blank" rel="noopener noreferrer">${esc(e.title)}</a></blockquote>`).join('')}</div><form id="proof-form"><h3>Добавить подтверждение</h3><label class="field">Название источника<input name="title" required maxlength="160"></label><label class="field">Ссылка<input name="url" type="url" required></label><label class="field">Текст источника<textarea name="source_text" required maxlength="100000"></textarea></label><label class="field">Дословная цитата<textarea name="quote" required maxlength="500"></textarea></label><button class="button" type="submit">Сохранить цитату</button></form><details><summary>Все поля исходной строки</summary><dl class="raw">${Object.entries(r.claims).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details></details><details><summary>История изменений</summary><div class="timeline">${r.events.map(e=>`<div>${dateText(e.created_at)} · ${esc(e.detail)}</div>`).join('')||'Изменений пока нет'}</div></details></div>`;
   await loadTelegramLinks(id);
   await loadCompletion(id);
+  await compactCard(id);
   if (!$('#detail').open) $('#detail').showModal();
 }
 const connectionFields=[
@@ -116,10 +120,23 @@ async function pdf(id,button) {
   const old=button.textContent;button.disabled=true;button.textContent='Готовлю PDF…';
   try {
     if ($('#detail').open && state.selected?.id===id && $('#decision-form')) await saveDecision();
-    const brief=await api('/records/'+id+'/brief',{method:'POST'});
+    const record=state.records.find(r=>r.id===id)||await api('/records/'+id);
+    let brief;
+    const settings=await api('/search/readiness');
+    if(record.dataset!=='demo'&&settings.ready){
+      const job=await api('/records/'+id+'/tasks',{method:'POST',body:JSON.stringify({kind:'author'})});
+      let task=job;
+      while(['queued','running'].includes(task.status)){
+        button.textContent='Автор готовит предложение…';
+        await new Promise(resolve=>setTimeout(resolve,1500));
+        task=await api('/tasks/'+job.id);
+      }
+      if(task.status!=='completed')throw Error(task.error||'Предложение не готово. Предыдущие версии сохранены.');
+      brief=task.result;
+    }else brief=await api('/records/'+id+'/brief',{method:'POST'});
     const link=document.createElement('a');link.href='/api/briefs/'+brief.id+'/pdf';link.download='Мегаполис — разбор объекта.pdf';document.body.append(link);link.click();link.remove();
     if ($('#detail').open) $('#pdf-result').innerHTML=`<p class="pdf-link">Версия ${brief.version} готова. <a href="/api/briefs/${brief.id}/pdf" target="_blank">Открыть PDF ↗</a></p>`;
-    if($('#detail').open){$('#completion-card')?.remove();await loadCompletion(id);}
+    if($('#detail').open){$('#completion-card')?.remove();await loadCompletion(id);await compactCard(id);}
     toast('PDF-разбор готов и сохранён');
   } finally {button.disabled=false;button.textContent=old;}
 }
@@ -140,7 +157,8 @@ document.addEventListener('click',async e=>{
     if(action==='demo-scan'){await startScan('demo');return;}
     if(action==='cancel-scan'){renderJob(await api('/jobs/'+activeJob.id+'/cancel',{method:'POST'}));return;}
     if(action==='retry-scan'){await startScan(activeJob.mode,{...activeJob.request,mode:activeJob.mode});return;}
-    if(action==='show-scan'){await chooseDataset(activeJob.result.dataset);return;}
+    if(action==='all-records'){state.runIds=null;renderRecords();return;}
+    if(action==='show-scan'){await chooseDataset(activeJob.result.dataset,activeJob.result.record_ids);return;}
     if(action==='scan'){
       const settings=await api('/search/readiness');
       if(!settings.ready){if(identity.role!=='admin'){toast('Попросите администратора настроить поиск в подключениях');return;}$('#scan-status').innerHTML='<div class="notice">Для поиска нужны Yandex и OpenRouter. Добавьте ключи — и можно запускать.<button class="button" data-action="settings">Подключить</button></div>';await openSettings();return;}
@@ -167,7 +185,7 @@ $('#dataset').addEventListener('change',async e=>{try{await chooseDataset(e.targ
 $('#excel-file').addEventListener('change',async e=>{try{const file=e.target.files[0];if(!file)return;const data=new FormData();data.append('file',file);const result=await api('/import',{method:'POST',body:data});await chooseDataset('imported');toast(result.found?`Добавлено карточек: ${result.added}. Повторы пропущены.`:'Структура таблицы не распознана');}catch(err){toast(err.message);}finally{e.target.value='';}});
 $('#chat-file').addEventListener('change',async e=>{try{const file=e.target.files[0];if(!file)return;if(file.size>10*1024*1024)throw Error('Максимальный размер — 10 МБ');const batch=JSON.parse(await file.text());batch.record_id=state.selected.id;const result=await api('/chats/import',{method:'POST',body:JSON.stringify(batch)});await openRecord(state.selected.id);toast('Добавлено сообщений: '+result.added);}catch(err){toast(err.message);}finally{e.target.value='';}});
 for(const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click',e=>{if(e.target===dialog){const rect=dialog.getBoundingClientRect();if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)dialog.close();}});
-(async()=>{try{identity=await api('/session');if(identity.mode==='server')$('#logout-button').hidden=false;state.offers=(await api('/offers')).offers;await refresh();const last=await api('/jobs/latest');if(last){renderJob(last);if(!terminalJobs.has(last.status))await watchJob(last.id);}}catch(err){$('#records').innerHTML=`<div class="empty">Не удалось загрузить данные: ${esc(err.message)}</div>`;}})();
+(async()=>{try{identity=await api('/session');if(identity.mode==='server')$('#logout-button').hidden=false;state.offers=(await api('/offers')).offers;await refresh();const last=await api('/jobs/latest');if(last){renderJob(last);if(last.result&&last.result.dataset===state.dataset)await chooseDataset(state.dataset,last.result.record_ids);if(!terminalJobs.has(last.status))await watchJob(last.id);}}catch(err){$('#records').innerHTML=`<div class="empty">Не удалось загрузить данные: ${esc(err.message)}</div>`;}})();
 
 $('#show-blocked').addEventListener('change',()=>{state.page=1;renderRecords();applyRole();});
 
@@ -183,3 +201,31 @@ document.addEventListener('click',async event=>{
   }catch(error){$('#model-catalog-status').textContent=error.message;}
   finally{button.disabled=false;}
 });
+
+function renderDevelopers(){
+  let el=$('#developer-overview');
+  if(!el){el=document.createElement('details');el.id='developer-overview';$('#records').before(el);}
+  const rows=state.dataset==='web'?(activeJob?.result?.coverage?.developers||[]).filter(r=>r.scope_verified):[];
+  el.hidden=!rows.length;
+  el.innerHTML=`<summary>Откуда начинается поиск: девелоперы ЕРЗ (${rows.length})</summary><p class="caption">Первая страница региональных рейтингов. Доля переноса в строящемся портфеле не равна доле просроченных квартир. Нажмите имя, чтобы найти ЖК в результатах.</p><div class="table-scroll"><table class="research-table"><thead><tr><th>Девелопер</th><th>Регион</th><th>С переносом</th></tr></thead><tbody>${[...rows].sort((a,b)=>(b.delayed_share_pct||0)-(a.delayed_share_pct||0)).map(r=>`<tr><td><button class="more" data-developer="${esc(r.developer)}">${esc(r.developer)}</button></td><td>${esc(r.region)}</td><td>${r.delayed_share_pct==null?'Нет данных':r.delayed_share_pct+'%'}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-developer]');if(!b)return;$('#filter').value=b.dataset.developer;state.filter=b.dataset.developer;state.page=1;renderRecords();});
+async function compactCard(id){
+  const target=$('#detail-content .dialog-body');if(!target||state.selected?.id!==id)return;
+  let tools=$('#analyst-tools');
+  if(!tools){tools=document.createElement('details');tools.id='analyst-tools';tools.innerHTML='<summary>Заметки, источники и дополнительные инструменты</summary>';target.append(tools);}
+  for(const el of [...target.children]){
+    if(el!==tools&&(el.tagName==='DETAILS'||el.id==='completion-card'||el.classList.contains('research')))tools.append(el);
+  }
+  const chat=target.querySelector(':scope > .chat-box');
+  if(chat){const d=document.createElement('details');d.className='simple-chats';d.innerHTML='<summary>Открытые чаты · последние 30 дней</summary>';chat.before(d);d.append(chat);}
+  if(!$('#research-overview')){
+    const value=await api('/records/'+id+'/intelligence');if(state.selected?.id!==id)return;
+    const el=document.createElement('section');el.id='research-overview';el.className='section';
+    const seenSources=new Set();const signals=(state.selected.dossier?.signals||[]).filter(s=>{if(seenSources.has(s.source_url))return false;seenSources.add(s.source_url);return true;});
+    const answers=value.research?.answers||[];
+    const chat=value.screening;
+    el.innerHTML=`<h3>Основания и позиция компании</h3>${signals.slice(0,4).map(s=>`<article class="finding"><span class="caption">${esc(s.event_date||s.published_at||'Дата не установлена')} · ${esc(s.kind_label)}</span><p>«${esc((s.quote||s.summary).slice(0,420))}»</p><a href="${safeURL(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(host(s.source_url))} ↗</a></article>`).join('')||'<p class="muted">Открытые источники ещё не подтверждены.</p>'}<h4>Что говорит застройщик</h4>${answers.filter(a=>a.question==='developer_response').map(a=>`<p>«${esc(a.quote)}» <a href="${safeURL(a.url)}" target="_blank" rel="noopener noreferrer">Источник ↗</a></p>`).join('')||'<p class="muted">Прямой ответ по выявленной проблеме в собранных материалах не найден.</p>'}<p class="caption">${chat?.chats.length?`Telegram API: прочитано ${chat.chats.reduce((n,c)=>n+c.read,0)} сообщений за 30 дней. Размечено ${chat.labelled}.`:'Чаты не прочитаны — выводов о настроениях участников нет.'}</p>`;
+    target.querySelector('.pdf-action').before(el);
+  }
+}

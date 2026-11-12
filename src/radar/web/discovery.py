@@ -13,7 +13,7 @@ import httpx
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
-from radar.web.configuration import configuration, model_config
+from radar.web.configuration import configuration, model_config, model_options
 from radar.web.dossiers import persist_findings
 from radar.web.model_output import parse_model_json
 from radar.web.sources import (
@@ -40,6 +40,7 @@ class SearchRequest(BaseModel):
     region: str = Field(pattern="^(capitals|moscow|petersburg|russia)$")
     period: str = Field(default="month", pattern="^(month|fortnight)$")
     enrich: bool = False
+    target: str = Field(default="", max_length=150)
 
 
 class SearchDocument(BaseModel):
@@ -88,6 +89,11 @@ class Finding(BaseModel):
 class Findings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     objects: list[Finding] = Field(max_length=30)
+    discarded_entries: int = Field(default=0, ge=0, le=30)
+
+
+class FindingEnvelope(BaseModel):
+    objects: list[dict] = Field(max_length=30)
 
 
 def call_json(client, url, headers, body, service):
@@ -165,7 +171,8 @@ def extract(client, cfg, model, documents):
         "Если девелопер не указан — 'Не установлен'. Название ЖК должно дословно входить "
         "в source.text. quote — дословная непрерывная цитата из source.text, "
         "подтверждающая описанную проблему. summary атрибутируй источнику: 'В публикации ...'. "
-        "source_index — индекс в массиве documents (с нуля). Один объект на источник. "
+        "source_index — индекс в массиве documents (с нуля). Из обзора извлекай все названные "
+        "ЖК с отдельной цитатой для каждого; не переноси цифры портфеля девелопера на его ЖК. "
         "building — точная фраза 'корпус 3' или 'дом 2' из quote, иначе null. "
         "Не включай корпус в name. event_date — дата описанного события, не дата публикации "
         "и не обещанный будущий срок; дата должна явно присутствовать в quote, иначе null. "
@@ -182,8 +189,7 @@ def extract(client, cfg, model, documents):
         {"Authorization": "Bearer " + cfg["OPENROUTER_API_KEY"]},
         {
             "model": model["model"],
-            "max_tokens": model.get("max_tokens", 4500),
-            "temperature": model.get("temperature", 0),
+            **model_options(model, max_tokens=8000),
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": prompt},
@@ -196,7 +202,16 @@ def extract(client, cfg, model, documents):
         "OpenRouter",
     )
     try:
-        return parse_model_json(result, Findings)
+        envelope = parse_model_json(result, FindingEnvelope)
+        objects = []
+        for candidate in envelope.objects:
+            try:
+                objects.append(Finding.model_validate(candidate))
+            except ValueError:
+                continue
+        if envelope.objects and not objects:
+            raise ValueError("Все кандидаты не прошли проверку схемы")
+        return Findings(objects=objects, discarded_entries=len(envelope.objects) - len(objects))
     except (KeyError, IndexError, ValueError, TypeError):
         raise ValueError(
             "Модель вернула некорректный разбор. Непроверенные карточки не сохранены."
@@ -227,10 +242,22 @@ def query_plan(root, request):
     cfg = DiscoverySettings.model_validate(
         yaml.safe_load((root / "config/discovery.yaml").read_text())
     ).model_dump()
+    if request.target.strip():
+        target = request.target.strip().replace('"', " ")
+        return cfg, [
+            f'"{target}" {suffix}'
+            for suffix in [
+                "перенос срока ввода передача ключей проектная декларация",
+                "отзывы дольщиков жалобы форум",
+                "официальный сайт ход строительства ответ застройщика",
+                "чат жителей телеграм",
+            ]
+        ]
+    templates = cfg["queries"][:2] if request.region == "russia" else cfg["queries"]
     queries = [
         template.format(region=region)
         for region in cfg["regions"][request.region]
-        for template in cfg["queries"]
+        for template in templates
     ]
     return cfg, list(dict.fromkeys(queries))
 
@@ -280,9 +307,10 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
 
     from uuid import uuid4
 
-    from radar.web.operations import BudgetExceeded, reserve_call
+    from radar.web.operations import BudgetExceeded, remaining_calls, reserve_call
 
     run_id = run_id or uuid4().hex
+    search_allowance = max(1, remaining_calls(store, run_id) // 2)
     requests = 0
     cache_hits = 0
     errors = []
@@ -307,28 +335,49 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
     client = client or httpx.Client(timeout=httpx.Timeout(90, connect=15), follow_redirects=False)
     try:
         documents = []
+        prospecting = {"queries": [], "developers": [], "errors": []}
+        completed_queries = []
         report("search", 2, "Ищем публикации по регионам и типам проблем")
         if prepared is not None:
             documents = prepared["documents"]
         else:
+            from radar.web.prospecting import seeds
+
+            report("registry", 2, "Изучаем портфели девелоперов и исходный список агентства")
+            if not request.target.strip():
+                prospecting = seeds(store, limits["regions"][request.region])
+            errors.extend(prospecting["errors"])
+            # Registry/project queries are timeless: a delayed project may have no recent news.
+            planned = [(q, "all") for q in prospecting["queries"]]
+            planned += [(q, "all" if request.target.strip() else request.period) for q in queries]
             successful_queries = 0
             query_results = []
-            for i, query in enumerate(queries):
+            for i, (query, period) in enumerate(planned):
                 report(
                     "search",
-                    3 + int(22 * i / len(queries)),
-                    f"Поисковый запрос {i + 1} из {len(queries)}",
+                    3 + int(22 * i / len(planned)),
+                    f"Поисковый запрос {i + 1} из {len(planned)}: {query}",
                 )
-                key = hashlib.sha256(
-                    f"yandex-v2:{day}:{request.period}:{query}".encode()
-                ).hexdigest()
+                key = hashlib.sha256(f"yandex-v2:{day}:{period}:{query}".encode()).hexdigest()
+                with store.connect() as db:
+                    hit = db.execute("SELECT 1 FROM web_cache WHERE key=?", (key,)).fetchone()
+                if requests >= search_allowance and not hit:
+                    errors.append(
+                        {
+                            "stage": "search",
+                            "detail": "Часть запросов отложена: бюджет сохранён для разбора.",
+                        }
+                    )
+                    break
                 try:
-                    rows = cached(key, lambda q=query: yandex(client, cfg, q, request.period))
+                    rows = cached(key, lambda q=query, p=period: yandex(client, cfg, q, p))
                     successful_queries += 1
+                    completed_queries.append(query)
                     query_results.append(rows)
                 except ValueError as exc:
                     if isinstance(exc, BudgetExceeded):
-                        raise
+                        errors.append({"stage": "search", "detail": str(exc), "query": query})
+                        break
                     errors.append({"stage": "search", "detail": str(exc), "query": query})
                     if "401" in str(exc) or "403" in str(exc):
                         raise
@@ -387,8 +436,10 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
         batches, batch, size = [], [], 0
         for doc in documents:
             copy = dict(doc)
-            if len(copy["text"]) > limits["batch_characters"]:
-                copy["text"] = copy["text"][: limits["batch_characters"]]
+            if len(copy["text"]) > min(8000, limits["batch_characters"]):
+                from radar.web.sources import research_excerpt
+
+                copy["text"] = research_excerpt(copy["text"], min(8000, limits["batch_characters"]))
                 copy["extraction_excerpt"] = True
             if batch and size + len(copy["text"]) > limits["batch_characters"]:
                 batches.append(batch)
@@ -412,7 +463,7 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                     rows = prepared["extract"](batch)
                 else:
                     key = hashlib.sha256(
-                        json.dumps(["extract-v3", model, batch], sort_keys=True).encode()
+                        json.dumps(["extract-v4", model, batch], sort_keys=True).encode()
                     ).hexdigest()
                     rows = Findings.model_validate(
                         cached(
@@ -422,24 +473,55 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                         )
                     )
                 check()
-                result = persist_findings(store, rows.objects, batch, dataset)
+                from radar.web.dossiers import source_region
+
+                in_scope = []
+                totals["discarded"] += rows.discarded_entries
+                for finding in rows.objects:
+                    if finding.source_index >= len(batch):
+                        continue
+                    region = source_region(finding.region, batch[finding.source_index]["text"])
+                    if (
+                        region not in {"Не установлен", "Россия", ""}
+                        and region not in limits["regions"][request.region]
+                    ):
+                        continue
+                    in_scope.append(finding)
+                totals["discarded"] += len(rows.objects) - len(in_scope)
+                result = persist_findings(store, in_scope, batch, dataset)
                 accepted_ids.update(result.pop("record_ids"))
                 for name, value in result.items():
                     totals[name] += value
                 completed_batches += 1
             except ValueError as exc:
-                if isinstance(exc, BudgetExceeded):
-                    raise
                 errors.append({"stage": "extract", "detail": str(exc)})
+                if isinstance(exc, BudgetExceeded):
+                    break
         if batches and not completed_batches:
             raise ValueError(
                 "Разбор публикаций не завершён. Источники сохранены; можно повторить запуск."
             )
         report("save", 96, "Сохраняем объекты, цитаты и историю изменений")
+        from radar.web.prospecting import save_leads
+
+        seed_ids, seeded = (
+            save_leads(store, prospecting.get("projects", [])) if dataset == "web" else ([], 0)
+        )
+        totals["added"] += seeded
+        accepted_ids.update(seed_ids)
         totals["found"] = len(accepted_ids)
         result = {
             **totals,
             "record_ids": sorted(accepted_ids),
+            "seed_ids": seed_ids,
+            "coverage": {
+                "regions": limits["regions"][request.region],
+                "queries_completed": len(completed_queries),
+                "queries": completed_queries,
+                "developers": prospecting["developers"],
+                "note": "Ограниченный обзор выбранных регионов, не полный реестр страны. "
+                + prospecting.get("limitation", ""),
+            },
             "documents": len(documents),
             "full_pages": loaded,
             "snippets": len(documents) - loaded,

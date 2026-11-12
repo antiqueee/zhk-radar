@@ -81,7 +81,7 @@ def test_pdf_versions_and_rejected_record(client):
     assert first.json()["id"] == again["id"]
     pdf = client.get(f"/api/briefs/{again['id']}/pdf")
     reader = PdfReader(io.BytesIO(pdf.content))
-    assert len(reader.pages) >= 6
+    assert len(reader.pages) == 2
     assert "Северный берег" in reader.pages[0].extract_text()
     assert "Пилот на 30 дней" in "".join(page.extract_text() for page in reader.pages)
     client.put("/api/records/demo-1", json=decision(client, note="Новая версия"))

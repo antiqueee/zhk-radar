@@ -289,3 +289,51 @@ def test_removed_manual_link_is_not_rediscovered_automatically(store):
     assert chat_workflow.candidates(store, "demo-1")[0]["status"] == "rejected"
     result = screening.screen(store, ["demo-1"], "after-removal", reader)
     assert not result["records"][0]["chats"] and not reader.inspections
+
+
+def test_partial_analysis_never_applies_invalid_quote(store):
+    save_settings(store.root, SettingsUpdate(values={"OPENROUTER_API_KEY": "test"}))
+    ingest_chat(
+        store,
+        ChatImport(
+            record_id="demo-1",
+            chat_id="fixture-chat",
+            title="Публичный тест",
+            access="public",
+            messages=[
+                {
+                    "id": str(i),
+                    "author_id": "test",
+                    "sent_at": datetime.now(UTC),
+                    "text": "Ждём ответа по срокам",
+                }
+                for i in range(2)
+            ],
+        ),
+        "salt",
+    )
+
+    def classifier(*args):
+        return chat_analysis.Labels(
+            messages=[
+                chat_analysis.Label(
+                    index=0, topic="нет_ответов", sentiment=-1, quote="Ждём ответа"
+                ),
+                chat_analysis.Label(
+                    index=1, topic="нет_ответов", sentiment=-1, quote="Выдуманный текст"
+                ),
+            ]
+        )
+
+    result = chat_analysis.analyze(
+        store, "demo-1", classifier=classifier, client=object(), allow_partial=True
+    )
+    assert result["labelled"] == 1 and result["rejected"] == 1 and result["more"]
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM chat_labels").fetchone()[0] == 1
+        assert (
+            db.execute("SELECT count(*) FROM local_messages WHERE topic='не_размечено'").fetchone()[
+                0
+            ]
+            == 1
+        )

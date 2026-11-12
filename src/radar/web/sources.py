@@ -124,9 +124,12 @@ class ArticleParser(HTMLParser):
         self.main = []
         self.title = []
         self.published = None
+        self.links = []
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
+        if tag == "a" and attributes.get("href") and len(self.links) < 500:
+            self.links.append(attributes["href"])
         if tag in {"script", "style", "nav", "header", "footer", "noscript", "svg", "form"}:
             self.skip += 1
         if tag in {"article", "main"}:
@@ -189,6 +192,7 @@ class Page:
     truncated: bool = False
     error: str = ""
     id: str = ""
+    links: list[str] | None = None
 
 
 def fetch_page(url, transport=public_get):
@@ -235,6 +239,7 @@ def fetch_page(url, transport=public_get):
             fetched_at=now(),
             content_hash=hashlib.sha256(body).hexdigest(),
             truncated=len(text) > MAX_TEXT,
+            links=list(dict.fromkeys(urljoin(current, link) for link in parser.links)),
         )
         return page
     raise SourceError("Слишком много перенаправлений")
@@ -253,7 +258,26 @@ def initialize_sources(store):
         """)
 
 
-def load_page(store, url, reader=fetch_page):
+def research_excerpt(text, limit=8000):
+    """Keep header + contiguous issue contexts instead of spending a batch on site navigation."""
+    if len(text) <= limit:
+        return text
+    spans = [(0, min(1800, limit))]
+    used = spans[0][1]
+    for match in re.finditer(
+        r"перенос|задерж|жалоб|просроч|протеч|ключ[ие]|срок|дефект", text, re.I
+    ):
+        start, end = max(0, match.start() - 300), min(len(text), match.end() + 700)
+        if any(start < b and end > a for a, b in spans):
+            continue
+        if used + end - start + 30 > limit:
+            continue
+        spans.append((start, end))
+        used += end - start + 30
+    return "\n[пропуск текста]\n".join(text[a:b] for a, b in sorted(spans))[:limit]
+
+
+def load_page(store, url, reader=fetch_page, *, require_links=False):
     initialize_sources(store)
     url = canonical_url(url)
     with store.connect() as db:
@@ -263,7 +287,7 @@ def load_page(store, url, reader=fetch_page):
             "ORDER BY fetched_at DESC LIMIT 1",
             (url, now()[:10]),
         ).fetchone()
-    if row:
+    if row and (not require_links or json.loads(row[0]).get("links") is not None):
         return Page(**json.loads(row[0])), True
     try:
         page = reader(url)

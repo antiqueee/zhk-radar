@@ -43,6 +43,7 @@ with tempfile.TemporaryDirectory(prefix="radar-autonomy-ui-") as folder:
                 page.goto("http://127.0.0.1:8766")
                 page.locator("#dataset").select_option("demo")
                 page.locator('.record-name[data-open="demo-1"]').click()
+                page.locator("#analyst-tools > summary").click()
                 page.locator("#advanced-card > summary").click()
                 page.get_by_role(
                     "button", name="Подготовить предложение моделью", exact=True
@@ -53,6 +54,8 @@ with tempfile.TemporaryDirectory(prefix="radar-autonomy-ui-") as folder:
                 with page.expect_download() as download:
                     page.get_by_role("button", name="Получить PDF-разбор", exact=False).click()
                 download.value.save_as(str(output / "autonomy-internal-demo.pdf"))
+                expect(page.locator("#pdf-result")).to_contain_text("готова")
+                page.locator("#analyst-tools").evaluate("el => el.open = true")
                 page.locator("#brief-check > summary").click()
                 with page.expect_popup() as popup:
                     page.get_by_text("Предпросмотр для девелопера ↗", exact=True).first.click()
@@ -62,6 +65,8 @@ with tempfile.TemporaryDirectory(prefix="radar-autonomy-ui-") as folder:
                 page.locator('#extra-source-binding [name="confirmed"]').check()
                 page.get_by_role("button", name="Сохранить источники", exact=True).click()
                 expect(page.locator("#toast")).to_have_text("Источники сохранены")
+                page.locator("#analyst-tools").evaluate("el => el.open = true")
+                page.locator("#extra-sources-card").evaluate("el => el.open = true")
                 page.get_by_role(
                     "button", name="Собрать дополнительные сигналы", exact=True
                 ).click()

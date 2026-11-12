@@ -463,3 +463,29 @@ def test_enabled_email_without_configuration_has_visible_blocked_history(store):
         == "blocked"
     )
     assert external_ops.status(store)["email"][0]["status"] == "blocked"
+
+
+def test_invalid_critic_cannot_approve_but_preserves_internal_draft(store):
+    real(store)
+    configure_author(store)
+
+    def writer(client, cfg, model, payload, sources, matches, criticism):
+        return valid_author(payload, sources)
+
+    def critic(*args):
+        return review.ReviewResult(
+            verdict="passed",
+            issues=[
+                review.Issue(
+                    block="Ошибка ссылки",
+                    severity="warning",
+                    reason="Источник не существует",
+                    source_ids=["invented-source"],
+                )
+            ],
+        )
+
+    brief = author.generate(store, "demo-1", "test-invalid-review", writer, critic, client=object())
+    assert brief["payload"]["author"]["status"] == "manual"
+    assert brief["payload"]["author"]["attempts"][0]["verdict"] == "manual"
+    assert not review.operator_approved(store, brief["id"])

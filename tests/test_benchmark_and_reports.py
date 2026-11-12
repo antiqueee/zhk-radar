@@ -19,7 +19,6 @@ from radar.web.benchmark import (
 from radar.web.configuration import write_secrets
 from radar.web.discovery import Findings
 from radar.web.operations import usage
-from radar.web.pdf import render_pdf
 from radar.web.store import Store, now
 
 
@@ -162,7 +161,9 @@ def test_case_products_and_unbounded_pdf_preserve_every_quote(store):
     assert engineering["conditional"] and "корпус 2" in engineering["scope"]
     assert "УК" in engineering["tasks"][0]
     assert not any(p["code"] == "O4" for p in products)
-    reader = PdfReader(io.BytesIO(render_pdf(brief)))
+    from radar.web.pdf import render_detailed_pdf
+
+    reader = PdfReader(io.BytesIO(render_detailed_pdf(brief)))
     text = "".join(p.extract_text() for p in reader.pages)
     assert len(reader.pages) > 7
     assert all(e["quote"].split(". ")[0] in text for e in brief["evidence"])

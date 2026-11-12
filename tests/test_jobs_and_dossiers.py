@@ -56,7 +56,7 @@ def test_offline_end_to_end_job_and_pdf(store):
         brief = client.post("/api/records/" + record["id"] + "/brief")
         assert brief.status_code == 200, brief.text
         pdf = client.get(f"/api/briefs/{brief.json()['id']}/pdf")
-        assert len(PdfReader(io.BytesIO(pdf.content)).pages) >= 6
+        assert len(PdfReader(io.BytesIO(pdf.content)).pages) == 2
         repeat = client.post("/api/search", json={"region": "capitals", "mode": "demo"}).json()
         repeated = finish(client, repeat["id"])
         assert repeated["result"]["added"] == repeated["result"]["signals_added"] == 0

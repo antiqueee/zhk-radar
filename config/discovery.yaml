@@ -1,14 +1,13 @@
-# Bound the initial stage of manual and opt-in scheduled scans.
-# Follow-up research shares the per-run API limit configured through Connections.
-max_pages: 20
-batch_characters: 24000
-max_model_batches: 8
+# A bounded overview, not a census of every development in Russia.
+max_pages: 100
+batch_characters: 32000
+max_model_batches: 20
 regions:
   capitals: [Москва, Московская область, Санкт-Петербург, Ленинградская область]
   moscow: [Москва, Московская область]
   petersburg: [Санкт-Петербург, Ленинградская область]
-  russia: [Россия]
+  russia: [Москва, Московская область, Санкт-Петербург, Ленинградская область, Краснодар, Екатеринбург, Новосибирск, Казань, Ростов-на-Дону, Нижний Новгород, Красноярск, Самара, Уфа, Воронеж, Тюмень, Пермь]
 queries:
-  - 'ЖК {region} перенос срока ввода передачи ключей жалобы'
-  - 'ЖК {region} жители дефекты протечки конфликт'
-  - 'ЖК {region} прокуратура стройнадзор предписание'
+  - 'ЖК {region} перенос срока сдачи передачи ключей дольщики'
+  - 'ЖК {region} отзывы жителей жалобы застройщик форум'
+  - 'ЖК {region} стройнадзор прокуратура нарушения строительство'

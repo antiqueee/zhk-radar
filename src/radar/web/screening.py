@@ -20,17 +20,24 @@ def initialize(store):
         )
 
 
-def matches(record, metadata):
+def matches(record, metadata, context=None):
     if not metadata.get("public") or not metadata.get("group"):
         return False, "Источник не является открытым чатом"
     text = normalized(metadata.get("title", "") + " " + metadata.get("description", ""))
     name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(record["name"]))
     if len(name) < 4 or (" " + name + " ") not in (" " + text + " "):
         return False, "Название ЖК не подтверждено описанием чата"
+    if len(name.split()) == 1 and not re.search(r"\b(жк|жилой|жильцов|дольщиков)\b", text):
+        return False, "Общее название без признаков чата жилого комплекса"
     region = record["region"]
-    if (
-        region in {"Россия", "Не установлен", "Не указан", ""}
-        or source_region(region, text) == "Не установлен"
+    context = context or {}
+    corroborated = (
+        name in normalized(context.get("context_text", ""))
+        and source_region(region, context.get("context_text", "")) != "Не установлен"
+        and bool(context.get("verified_url"))
+    )
+    if region in {"Россия", "Не установлен", "Не указан", ""} or (
+        source_region(region, text) == "Не установлен" and not corroborated
     ):
         return False, "Регион не подтверждён описанием чата"
     building = normalized(record.get("building") or "")
@@ -40,7 +47,11 @@ def matches(record, metadata):
 
     if building and (" " + canonical(building) + " ") not in (" " + canonical(text) + " "):
         return False, "Чат всего ЖК или другого корпуса: нужна проверка соответствия"
-    return True, "Название, регион и указанный корпус совпали с описанием открытого чата"
+    return True, (
+        "Название совпало; регион подтверждён публичной ссылкой на этот чат"
+        if corroborated
+        else "Название, регион и указанный корпус совпали с описанием открытого чата"
+    )
 
 
 def latest(store, ident):
@@ -62,6 +73,7 @@ def screen(
     *,
     finder=None,
     analyzer=None,
+    corroborator=None,
     cancelled=lambda: False,
     progress=lambda *a: None,
 ):
@@ -81,6 +93,7 @@ def screen(
         }
     finder = finder or chat_workflow.discover_chats
     analyzer = analyzer or chat_analysis.analyze
+    corroborator = corroborator or chat_workflow.corroborate
     results = []
 
     def check():
@@ -126,12 +139,23 @@ def screen(
                     for c in found
                 ):
                     found = finder(store, ident, run_id)["candidates"]
-                for candidate in [c for c in found if c["status"] != "rejected"][:3]:
+                corroboration_attempts = 0
+                for candidate in [c for c in found if c["status"] != "rejected"][:10]:
                     check()
                     url = candidate["url"]
                     try:
                         metadata = telegram.inspect(url)
                         accepted, reason = matches(record, metadata)
+                        context = None
+                        if not accepted and reason == "Регион не подтверждён описанием чата":
+                            payload = candidate.get("payload", {})
+                            if url in payload.get("source_url", ""):
+                                context = {**payload, "verified_url": url}
+                                accepted, reason = matches(record, metadata, context)
+                            if not accepted and corroboration_attempts < 2:
+                                corroboration_attempts += 1
+                                context = corroborator(store, record, candidate, run_id)
+                                accepted, reason = matches(record, metadata, context)
                         if not accepted:
                             value["skipped"].append({"url": url, "reason": reason})
                             continue
@@ -141,6 +165,7 @@ def screen(
                                 **candidate["payload"],
                                 "auto_matched": True,
                                 "match_reason": reason,
+                                "binding_source": context,
                                 "matched_at": now(),
                             }
                             db.execute(
@@ -194,8 +219,10 @@ def screen(
                         max_messages=60,
                         text_budget=12000,
                         newest_first=True,
+                        allow_partial=True,
                     )
                     value["labelled"] = result["labelled"]
+                    value["rejected_labels"] = result.get("rejected", 0)
                     value["more_unlabelled"] = result["more"]
                 except ValueError as exc:
                     value["errors"].append(str(exc))
