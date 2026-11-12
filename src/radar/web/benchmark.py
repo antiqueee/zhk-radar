@@ -12,7 +12,13 @@ import httpx
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from radar.web.configuration import SETTINGS_LOCK, atomic_write, configuration, model_config
+from radar.web.configuration import (
+    SETTINGS_LOCK,
+    atomic_write,
+    configuration,
+    model_config,
+    raw_model_config,
+)
 from radar.web.discovery import SearchDocument, call_json, extract, yandex
 from radar.web.operations import BudgetExceeded, reserve_call
 from radar.web.sources import canonical_url
@@ -66,7 +72,7 @@ class Review(BaseModel):
 
 def save_models(root, data):
     with SETTINGS_LOCK:
-        cfg = model_config(root)
+        cfg = raw_model_config(root)
         for role, model in data.model_dump().items():
             cfg[role] = {"model": model, "max_tokens": 4500, "temperature": 0}
         atomic_write(root / "config/models.yaml", yaml.safe_dump(cfg, allow_unicode=True), 0o644)

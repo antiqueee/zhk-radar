@@ -220,3 +220,36 @@ def test_region_inflections_are_normalized_only_with_text_support():
     assert source_region("Московская область", "В Московской области") == "Московская область"
     assert source_region("Москва", "Новостройки в Казани") == "Не установлен"
     assert source_region("Московская область", "Новостройки Москвы") == "Не установлен"
+
+
+def test_reject_related_reviews_generic_names_and_wrong_complex(store):
+    from radar.web.dossiers import persist_findings
+    from radar.web.sources import primary_text
+
+    url = "https://www.banki.ru/realty/responses/response/123/"
+    main = "Москва. ЖК «Северный». Жители сообщают о переносе передачи квартир."
+    related = "\nЕще отзывы о застройщике\nЖК «Южный». Жители жалуются на качество отделки."
+    text = main + related
+    assert primary_text(url, text) == main
+    docs = [
+        {
+            "url": url,
+            "text": text,
+            "title": "Отзыв",
+            "source_id": "test-source",
+            "source_kind": "page",
+        }
+    ]
+    bad = [
+        finding().model_copy(
+            update={"name": "ЖК «Южный»", "quote": "Жители жалуются на качество отделки."}
+        ),
+        finding().model_copy(update={"name": "Многоквартирный дом"}),
+    ]
+    assert persist_findings(store, bad, docs)["discarded"] == 2
+    docs[0]["url"] = "https://example.org/article"
+    docs[0]["text"] = "ЖК «Северный». Жители ЖК «Южный» жалуются на протечки."
+    wrong = finding().model_copy(update={"quote": "Жители ЖК «Южный» жалуются на протечки."})
+    assert persist_findings(store, [wrong], docs)["discarded"] == 1
+    docs[0].update(url=url, text=text)
+    assert persist_findings(store, [finding()], docs)["added"] == 1

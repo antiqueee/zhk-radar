@@ -15,7 +15,15 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from radar.web.configuration import configuration, model_config
 from radar.web.dossiers import persist_findings
-from radar.web.sources import Page, canonical_url, fetch_page, initialize_sources, load_page
+from radar.web.model_output import parse_model_json
+from radar.web.sources import (
+    Page,
+    canonical_url,
+    fetch_page,
+    initialize_sources,
+    load_page,
+    primary_text,
+)
 from radar.web.store import now
 
 REGIONS = {
@@ -114,7 +122,11 @@ def yandex(client, cfg, query, period):
             "responseFormat": "FORMAT_XML",
             "maxPassages": "5",
             "l10n": "LOCALIZATION_RU",
-            "period": "PERIOD_MONTH" if period == "month" else "PERIOD_2_WEEKS",
+            "period": {
+                "month": "PERIOD_MONTH",
+                "fortnight": "PERIOD_2_WEEKS",
+                "all": "PERIOD_ALL_TIME",
+            }[period],
         },
         "Yandex Search",
     )
@@ -148,6 +160,8 @@ def extract(client, cfg, model, documents):
         "source_kind=snippet — только поисковый фрагмент. "
         "Найди конкретные названные ЖК с жалобами, переносами, конфликтами, дефектами. "
         "Пропускай общие статьи и случаи без названия ЖК. Не додумывай корпус, девелопера, даты. "
+        "Не извлекай объекты из блоков похожих отзывов и рекомендованных публикаций. "
+        "Не используй общее 'Многоквартирный дом' как название ЖК. "
         "Если девелопер не указан — 'Не установлен'. Название ЖК должно дословно входить "
         "в source.text. quote — дословная непрерывная цитата из source.text, "
         "подтверждающая описанную проблему. summary атрибутируй источнику: 'В публикации ...'. "
@@ -182,7 +196,7 @@ def extract(client, cfg, model, documents):
         "OpenRouter",
     )
     try:
-        return Findings.model_validate_json(result["choices"][0]["message"]["content"])
+        return parse_model_json(result, Findings)
     except (KeyError, IndexError, ValueError, TypeError):
         raise ValueError(
             "Модель вернула некорректный разбор. Непроверенные карточки не сохранены."
@@ -344,7 +358,7 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
             page_requests += not hit
             if page.status == "loaded":
                 doc.update(
-                    text=page.text,
+                    text=primary_text(doc["url"], page.text),
                     title=page.title or doc["title"],
                     source_kind="page",
                     source_id=page.id,

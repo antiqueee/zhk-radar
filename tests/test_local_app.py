@@ -123,7 +123,14 @@ def test_chat_dedup_redaction_and_aggregate(client):
     with client.app.state.store.connect() as db:
         row = dict(db.execute("SELECT * FROM local_messages").fetchone())
     assert len(row["author_hash"]) == 64
-    for private in ["Иван", "999", "private_nick", "x@example.org", "private-author"]:
+    assert "999" not in row["text"]  # Hashes/timestamps may coincidentally contain these digits.
+    for private in [
+        "Иван",
+        "+7 (999) 123-45-67",
+        "private_nick",
+        "x@example.org",
+        "private-author",
+    ]:
         assert private not in json.dumps(row, ensure_ascii=False)
     salt = client.app.state.store.root / ".env"
     assert salt.stat().st_mode & 0o777 == 0o600

@@ -9,8 +9,9 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from radar.web.configuration import configuration, model_config
+from radar.web.configuration import configuration, model_config, model_options
 from radar.web.discovery import call_json
+from radar.web.model_output import parse_model_json
 from radar.web.operations import reserve_call
 from radar.web.store import now
 
@@ -104,9 +105,7 @@ def review_model(client, cfg, model, payload, documents):
         "https://openrouter.ai/api/v1/chat/completions",
         {"Authorization": "Bearer " + cfg["OPENROUTER_API_KEY"]},
         {
-            "model": model["model"],
-            "max_tokens": 5000,
-            "temperature": 0,
+            **model_options(model),
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -136,7 +135,7 @@ def review_model(client, cfg, model, payload, documents):
         "OpenRouter review",
     )
     try:
-        return ReviewResult.model_validate_json(result["choices"][0]["message"]["content"])
+        return parse_model_json(result, ReviewResult)
     except (ValueError, KeyError, IndexError, TypeError):
         raise ValueError("Проверяющая модель вернула некорректный ответ") from None
 

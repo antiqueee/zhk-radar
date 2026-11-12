@@ -11,7 +11,7 @@ from radar.web import stoplist
 from radar.web.chats import initialize as initialize_chats
 from radar.web.configuration import configuration
 from radar.web.discovery import yandex
-from radar.web.dossiers import dossier
+from radar.web.dossiers import dossier, normalized
 from radar.web.store import now
 from radar.web.telegram import TelegramLink
 from radar.web.workflow import cached, initialize
@@ -20,12 +20,19 @@ from radar.web.workflow import cached, initialize
 def candidates(store, ident):
     initialize(store)
     with store.connect() as db:
-        return [
+        rows = [
             {**dict(r), "payload": json.loads(r["payload"])}
             for r in db.execute(
                 "SELECT * FROM chat_candidates WHERE record_id=? ORDER BY url", (ident,)
             )
         ]
+    return sorted(
+        rows,
+        key=lambda r: (
+            -(r["payload"].get("relevance", 0) + (5 if "chat" in r["url"].lower() else 0)),
+            r["url"],
+        ),
+    )
 
 
 def discover_chats(store, ident, run_id, client=None, searcher=yandex):
@@ -44,11 +51,12 @@ def discover_chats(store, ident, run_id, client=None, searcher=yandex):
     owns = client is None
     client = client or httpx.Client(timeout=60)
     try:
-        query = f"{record['name']} {record['region']} чат жителей дольщиков site:t.me"
+        name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(record["name"]))
+        query = f'"{name}" чат site:t.me'
         rows, _ = cached(
             store,
-            ["chat-search-v1", now()[:10], query],
-            lambda: searcher(client, cfg, query, "month"),
+            ["chat-search-v2", now()[:10], query],
+            lambda: searcher(client, cfg, query, "all"),
             run_id,
             "search",
         )
@@ -75,13 +83,21 @@ def discover_chats(store, ident, run_id, client=None, searcher=yandex):
                         "title": source["title"],
                         "found_at": now(),
                         "verified": False,
+                        "relevance": (10 if name in normalized(source["title"]) else 0)
+                        + (
+                            5
+                            if re.search(r"\b(чат|соседи|жители)\b", normalized(source["title"]))
+                            else 0
+                        ),
                         "note": "Совпадение с ЖК и публичность нужно проверить перед подключением",
                     },
                 )
         with store.connect() as db:
             for url, payload in list(found.items())[:10]:
                 db.execute(
-                    "INSERT OR IGNORE INTO chat_candidates VALUES(?,?,?,'suggested')",
+                    "INSERT INTO chat_candidates VALUES(?,?,?,'suggested') "
+                    "ON CONFLICT(record_id,url) DO UPDATE SET payload=excluded.payload "
+                    "WHERE chat_candidates.status != 'rejected'",
                     (ident, url, json.dumps(payload)),
                 )
         return {"candidates": candidates(store, ident), "searched": True}

@@ -19,6 +19,16 @@ MAX_BYTES = 2_000_000
 MAX_TEXT = 40_000
 
 
+def primary_text(url, text):
+    """A review's related-review cards are not evidence from that review."""
+    host = (urlsplit(url).hostname or "").lower()
+    if host in {"banki.ru", "www.banki.ru"} and "/realty/responses/response/" in url:
+        boundary = re.search(r"(?im)^\s*ещ[её] отзывы о застройщике\s*$", text)
+        if boundary:
+            return text[: boundary.start()].rstrip()
+    return text
+
+
 class SourceError(ValueError):
     pass
 

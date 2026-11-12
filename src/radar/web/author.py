@@ -13,6 +13,7 @@ from radar.web.brief_service import payload_for
 from radar.web.chats import redact
 from radar.web.configuration import configuration, model_config
 from radar.web.discovery import call_json
+from radar.web.model_output import parse_model_json
 from radar.web.pdf import render_pdf
 from radar.web.workflow import cached
 
@@ -120,7 +121,7 @@ def write_model(client, cfg, model, payload, sources, matches, criticism):
         "Автор отчёта",
     )
     try:
-        return Authored.model_validate_json(response["choices"][0]["message"]["content"])
+        return parse_model_json(response, Authored)
     except (ValueError, KeyError, IndexError, TypeError):
         raise ValueError("Автор вернул некорректный отчёт; прежняя версия сохранена") from None
 

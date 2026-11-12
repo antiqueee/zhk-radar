@@ -37,6 +37,7 @@ from radar.web.configuration import (
     atomic_write,
     configuration,
     model_config,
+    raw_model_config,
     save_settings,
 )
 from radar.web.discovery import SearchRequest
@@ -203,6 +204,12 @@ def create_app(root: Path | None = None):
     def update_settings(data: SettingsUpdate):
         save_settings(root, data)
         return {"saved": True}
+
+    @app.get("/api/settings/models")
+    def available_models():
+        from radar.web.model_catalog import catalog
+
+        return catalog()
 
     @app.get("/api/benchmark/config")
     def benchmark_config():
@@ -591,6 +598,7 @@ def create_app(root: Path | None = None):
     @app.get("/api/settings")
     def settings():
         cfg = configuration(root)
+        raw_models = raw_model_config(root)
         selected_model = model_config(root)["extract"].get("model", "")
         services = [
             ("OpenRouter", ["OPENROUTER_API_KEY"], "Извлечение фактов и текст расклада"),
@@ -613,6 +621,14 @@ def create_app(root: Path | None = None):
             "model": selected_model,
             "review_model": model_config(root).get("review", {}).get("model", ""),
             "author_model": model_config(root).get("author", {}).get("model", ""),
+            "model_selection": {
+                role: {
+                    "selected": raw_models.get(role, {}).get("model", ""),
+                    "default": raw_models.get(role, {}).get("default_model", ""),
+                    "label": raw_models.get(role, {}).get("default_label", ""),
+                }
+                for role in ("extract", "author", "review")
+            },
             "search_ready": bool(selected_model)
             and all(
                 cfg.get(k)

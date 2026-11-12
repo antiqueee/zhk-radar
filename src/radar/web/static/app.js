@@ -87,10 +87,21 @@ const connectionFields=[
  {title:'Внешние копии и рабочая почта',hint:'Необязательно. Отправки включаются отдельно ниже. S3 хранит зашифрованную базу; ключ шифрования сохраните в менеджере паролей.',keys:[['SMTP_HOST','SMTP-сервер (TLS, порт 465)','text'],['SMTP_USERNAME','Логин почты','text'],['SMTP_PASSWORD','Пароль приложения почты','password'],['SMTP_FROM','Адрес отправителя','text'],['SMTP_TO','Рабочие адреса получателей через запятую','text'],['BACKUP_REGION','Регион AWS S3','text'],['BACKUP_BUCKET','S3 bucket','text'],['BACKUP_ACCESS_KEY','S3 Access Key','password'],['BACKUP_SECRET_KEY','S3 Secret Key','password'],['BACKUP_ENCRYPTION_KEY','Ключ Fernet для шифрования копий','password']]},
  {title:'Google Sheets',hint:'Сохраните ID таблицы; JSON ключа загрузите в разделе синхронизации ниже.',keys:[['SHEET_ID','ID таблицы','text']]}
 ];
+let modelChoices=[];
+function modelSelectors(settings) {
+  const roles=[['extract','model','Анализ источников'],['author','author_model','Автор предложения'],['review','review_model','Проверка предложения']];
+  const selections=settings.model_selection||{};
+  const choices=new Map(modelChoices.map(m=>[m.id,m]));
+  Object.values(selections).forEach(m=>{if(m.default&&!choices.has(m.default))choices.set(m.default,{id:m.default,name:m.label||m.default});if(m.selected&&!choices.has(m.selected))choices.set(m.selected,{id:m.selected,name:m.selected});});
+  return roles.map(([role,field,label])=>{
+    const m=selections[role]||{};
+    return `<label class="field">${label}<select name="${field}" data-model-role="${role}"><option value="">Автоматически · ${esc(m.label||'набор проекта')}</option>${[...choices.values()].map(c=>`<option value="${esc(c.id)}" ${m.selected===c.id?'selected':''}>${esc(c.name)}${c.prompt!=null&&c.completion!=null?` · $${c.prompt} / $${c.completion}`:''}</option>`).join('')}</select></label>`;
+  }).join('');
+}
 async function openSettings() {
   const settings=await api('/settings');
   function section(group) {return `<section class="connections-section"><h3>${group.title}<span class="status-label ${group.keys.every(([k])=>settings.fields[k])?'ready':''}">${group.keys.every(([k])=>settings.fields[k])?'Сохранено':'Не заполнено'}</span></h3><p>${group.hint}</p>${group.keys.map(([key,label,type])=>`<label class="field">${label}<input name="${key}" type="${type}" autocomplete="off" spellcheck="false" placeholder="${settings.fields[key]?'Уже сохранено · введите для замены':'Вставьте значение'}" maxlength="2000"></label>`).join('')}</section>`;}
-  $('#connections-content').innerHTML=`<div class="dialog-header"><button class="close" data-action="close-settings" aria-label="Закрыть подключения">×</button><span class="eyebrow">НАСТРОЙКА СЕРВИСОВ</span><h2 id="connections-title">Подключения</h2><p>Добавьте ключи один раз — они сохранятся в рабочем приложении.</p></div><div class="dialog-body"><form id="settings-form">${section(connectionFields[0])}${section(connectionFields[1])}<label class="field">Модель для анализа<input name="model" value="${esc(settings.model)}" placeholder="Идентификатор модели в OpenRouter" maxlength="150"></label><label class="field">Модель автора предложения<input name="author_model" value="${esc(settings.author_model)}" placeholder="ID модели OpenRouter" maxlength="150"></label><label class="field">Отдельная модель проверки<input name="review_model" value="${esc(settings.review_model)}" placeholder="ID другой модели OpenRouter" maxlength="150"></label><p class="caption">Модель можно сменить без переделки проекта. Запросы к сервисам тарифицируются по вашим аккаунтам.</p><details><summary>Дополнительные подключения: Telegram, поиск и таблицы</summary>${connectionFields.slice(2).map(section).join('')}</details><div class="settings-foot"><button class="button primary" type="submit">Сохранить подключения</button><p>Пустые поля сохраняют прежние значения.<br>Сохранение ключей не запускает платных запросов.</p></div><div id="settings-status" class="form-status" role="status"></div></form><div id="operations-content"></div></div>`;
+  $('#connections-content').innerHTML=`<div class="dialog-header"><button class="close" data-action="close-settings" aria-label="Закрыть подключения">×</button><span class="eyebrow">НАСТРОЙКА СЕРВИСОВ</span><h2 id="connections-title">Подключения</h2><p>Добавьте ключи один раз — они сохранятся в рабочем приложении.</p></div><div class="dialog-body"><form id="settings-form">${section(connectionFields[0])}${section(connectionFields[1])}<p class="caption">Модели анализа, автора и проверки настроены автоматически. Можно сразу запускать поиск.</p><details id="model-settings"><summary>Дополнительно: выбор моделей</summary><div id="model-selectors">${modelSelectors(settings)}</div><button class="button" type="button" data-action="load-models">Загрузить список OpenRouter</button><p class="caption">Ручной ввод ID не нужен. Цены в списке: вход / выход за миллион токенов в долларах. Автор и проверяющая модель должны отличаться. Фактический доступ зависит от аккаунта OpenRouter.</p><div id="model-catalog-status" role="status"></div></details><details><summary>Дополнительные подключения: Telegram, поиск и таблицы</summary>${connectionFields.slice(2).map(section).join('')}</details><div class="settings-foot"><button class="button primary" type="submit">Сохранить подключения</button><p>Пустые поля сохраняют прежние значения.<br>Сохранение ключей не запускает платных запросов.</p></div><div id="settings-status" class="form-status" role="status"></div></form><div id="operations-content"></div></div>`;
   await loadOperations();
   await loadCompletionSettings();
   if (!$('#connections').open) $('#connections').showModal();
@@ -159,3 +170,16 @@ for(const dialog of document.querySelectorAll('dialog')) dialog.addEventListener
 (async()=>{try{identity=await api('/session');if(identity.mode==='server')$('#logout-button').hidden=false;state.offers=(await api('/offers')).offers;await refresh();const last=await api('/jobs/latest');if(last){renderJob(last);if(!terminalJobs.has(last.status))await watchJob(last.id);}}catch(err){$('#records').innerHTML=`<div class="empty">Не удалось загрузить данные: ${esc(err.message)}</div>`;}})();
 
 $('#show-blocked').addEventListener('change',()=>{state.page=1;renderRecords();applyRole();});
+
+document.addEventListener('click',async event=>{
+  const button=event.target.closest('[data-action="load-models"]');if(!button)return;
+  button.disabled=true;$('#model-catalog-status').textContent='Загружаем каталог…';
+  try {
+    const settings=await api('/settings');
+    for(const select of document.querySelectorAll('[data-model-role]'))settings.model_selection[select.dataset.modelRole].selected=select.value;
+    const result=await api('/settings/models');modelChoices=result.models;
+    $('#model-selectors').innerHTML=modelSelectors(settings);
+    $('#model-catalog-status').textContent=`Доступно в каталоге: ${modelChoices.length}. Выберите модели и сохраните подключения.`;
+  }catch(error){$('#model-catalog-status').textContent=error.message;}
+  finally{button.disabled=false;}
+});

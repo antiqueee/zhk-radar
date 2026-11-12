@@ -6,7 +6,7 @@ import re
 import unicodedata
 from datetime import UTC, date, datetime
 
-from radar.web.sources import initialize_sources
+from radar.web.sources import initialize_sources, primary_text
 from radar.web.store import now
 
 KINDS = {
@@ -87,8 +87,24 @@ def persist_findings(store, findings, documents, dataset="web"):
                 discarded += 1
                 continue
             source = documents[finding.source_index]
-            text = source["text"]
+            text = primary_text(source["url"], source["text"])
+            if normalized(finding.name) in {
+                "многоквартирный дом",
+                "жилой дом",
+                "жилой комплекс",
+                "жк",
+                "дом",
+                "новостройка",
+            }:
+                discarded += 1
+                continue
             if finding.quote not in text or finding.name.casefold() not in text.casefold():
+                discarded += 1
+                continue
+            name = re.sub(r"^(жк|жилой комплекс)\s+", "", normalized(finding.name))
+            quote_text = normalized(finding.quote)
+            # An explicit ЖК in the quote must refer to the proposed object, not a neighbour.
+            if re.search(r"\bжк\b", quote_text) and name not in quote_text:
                 discarded += 1
                 continue
             if finding.building and (

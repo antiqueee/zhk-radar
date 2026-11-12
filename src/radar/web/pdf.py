@@ -407,6 +407,9 @@ def render_pdf(brief: dict) -> bytes:
                 + product["case_trigger"]
                 + "»",
             )
+        if product.get("rationale"):
+            story.append(PageBreak())
+            title(3 + i, f"План продукта {i} · {product['code']}", product["name"])
         add("Точечная адаптация: состав работ", size=12, color=NAVY)
         for n, task in enumerate(product["tasks"], 1):
             add(f"{n:02d}. {task}", size=10)

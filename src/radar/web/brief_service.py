@@ -1,5 +1,8 @@
 """Build an immutable report snapshot independently of HTTP and background workers."""
 
+import hashlib
+import json
+
 from radar.briefs.offers import PainWeight, load_offers, select_offers
 from radar.briefs.report import build_report
 from radar.web import registry, stoplist
@@ -78,5 +81,18 @@ def payload_for(store, ident):
 
 def build(store, ident):
     payload = payload_for(store, ident)
+    from radar.web import cases
+
+    base_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    matches = cases.matching(store, payload)
+    with store.connect() as db:
+        rows = db.execute("SELECT * FROM briefs WHERE record_id=? ORDER BY id DESC", (ident,))
+        for row in rows:
+            saved = json.loads(row["payload"])
+            if (
+                saved.get("author", {}).get("base_fingerprint") == base_hash
+                and saved.get("cases", []) == matches
+            ):
+                return {**dict(row), "payload": saved}
     render_pdf(payload)
     return store.save_brief(ident, payload)

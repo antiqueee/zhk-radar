@@ -41,7 +41,7 @@ KEYS = {
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     values: dict[str, str] = Field(default_factory=dict, max_length=48)
-    model: str = Field(default="", max_length=150)
+    model: str | None = Field(default=None, max_length=150)
     review_model: str | None = Field(default=None, max_length=150)
     author_model: str | None = Field(default=None, max_length=150)
 
@@ -66,9 +66,26 @@ def configuration(root: Path):
     return {**os.environ, **dotenv_values(root / ".env", interpolate=False)}
 
 
-def model_config(root: Path):
+def raw_model_config(root: Path):
     path = root / "config/models.yaml"
     return yaml.safe_load(path.read_text()) if path.exists() else {"extract": {"model": ""}}
+
+
+def model_config(root: Path):
+    cfg = raw_model_config(root)
+    for value in cfg.values():
+        if isinstance(value, dict) and not value.get("model"):
+            value["model"] = value.get("default_model", "")
+    return cfg
+
+
+def model_options(model, max_tokens=5000):
+    result = {"model": model["model"], "max_tokens": model.get("max_tokens", max_tokens)}
+    if model.get("temperature", 0) is not None:
+        result["temperature"] = model.get("temperature", 0)
+    if model.get("reasoning"):
+        result["reasoning"] = model["reasoning"]
+    return result
 
 
 def atomic_write(path: Path, text: str, mode=0o600):
@@ -102,8 +119,9 @@ def write_secrets(root: Path, updates: dict):
 def save_settings(root: Path, update: SettingsUpdate):
     with SETTINGS_LOCK:
         write_secrets(root, update.values)
-        cfg = model_config(root)
-        cfg.setdefault("extract", {})["model"] = update.model
+        cfg = raw_model_config(root)
+        if update.model is not None:
+            cfg.setdefault("extract", {})["model"] = update.model
         if update.review_model is not None:
             cfg.setdefault("review", {})["model"] = update.review_model
         if update.author_model is not None:

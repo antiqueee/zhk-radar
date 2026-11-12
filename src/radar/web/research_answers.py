@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from radar.web.discovery import call_json
+from radar.web.model_output import parse_model_json
 
 
 class Answer(BaseModel):
@@ -58,7 +59,7 @@ def extract_answers(client, cfg, model, record, documents):
         "Исследователь",
     )
     try:
-        return Answers.model_validate_json(result["choices"][0]["message"]["content"])
+        return parse_model_json(result, Answers)
     except (ValueError, KeyError, IndexError, TypeError):
         raise ValueError("Исследователь вернул некорректный ответ") from None
 

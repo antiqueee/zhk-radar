@@ -17,7 +17,7 @@ from radar.web.configuration import configuration, model_config
 from radar.web.discovery import Findings, ScanCancelled, extract, yandex
 from radar.web.dossiers import dossier, normalized, persist_findings
 from radar.web.operations import BudgetExceeded, reserve_call
-from radar.web.sources import Page, canonical_url, fetch_page, load_page
+from radar.web.sources import Page, canonical_url, fetch_page, load_page, primary_text
 from radar.web.store import now
 
 
@@ -253,7 +253,7 @@ def query_documents(store, query, run_id, client, reader=fetch_page, max_pages=4
             {
                 **row,
                 "url": url,
-                "text": page.text[:12000],
+                "text": primary_text(url, page.text)[:12000],
                 "source_id": page.id,
                 "source_kind": "page" if full else "snippet",
                 "published_at": page.published_at,

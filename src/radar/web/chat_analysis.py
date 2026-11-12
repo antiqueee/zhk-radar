@@ -14,6 +14,7 @@ from radar.briefs.offers import load_offers
 from radar.web.chats import initialize
 from radar.web.configuration import configuration, model_config
 from radar.web.discovery import call_json
+from radar.web.model_output import parse_model_json
 from radar.web.operations import reserve_call
 from radar.web.store import now
 
@@ -73,7 +74,7 @@ def classify(client, cfg, model, messages, topics):
         "OpenRouter",
     )
     try:
-        return Labels.model_validate_json(result["choices"][0]["message"]["content"])
+        return parse_model_json(result, Labels)
     except (KeyError, IndexError, ValueError, TypeError):
         raise ValueError("Модель вернула некорректную разметку. Сообщения не изменены") from None
 

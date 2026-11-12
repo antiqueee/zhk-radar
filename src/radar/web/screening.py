@@ -120,7 +120,11 @@ def screen(
         if not links:
             try:
                 found = chat_workflow.candidates(store, ident)
-                if not found:
+                if not found or any(
+                    c["status"] == "suggested"
+                    and c.get("payload", {}).get("found_at", now())[:10] < now()[:10]
+                    for c in found
+                ):
                     found = finder(store, ident, run_id)["candidates"]
                 for candidate in [c for c in found if c["status"] != "rejected"][:3]:
                     check()

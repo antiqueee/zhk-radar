@@ -178,6 +178,10 @@ def test_author_one_repair_and_content_cache(store):
     assert first["payload"]["author"]["status"] == "reviewed"
     assert not review.operator_approved(store, first["id"])
     assert usage(store)["calls"] == 4
+    assert build(store, "demo-1")["id"] == first["id"]
+    with store.connect() as db:
+        db.execute("UPDATE records SET note='Новое уточнение' WHERE id='demo-1'")
+    assert "author" not in build(store, "demo-1")["payload"]
 
 
 def test_bad_author_does_not_publish_and_does_not_recharge(store):
@@ -259,6 +263,7 @@ def test_chat_suggestions_never_auto_connect_and_cache(store):
     calls = []
 
     def search(*args):
+        assert args[-1] == "all"  # Chat creation date must not restrict 30-day history reads.
         calls.append(1)
         return [
             {
