@@ -1,6 +1,5 @@
 """Web endpoints for autonomous research, authored proposals and public chat suggestions."""
 
-import json
 from typing import Literal
 
 from fastapi import Request
@@ -76,15 +75,9 @@ def install(app, store):
     @app.get("/api/records/{ident}/intelligence")
     def intelligence(ident: str):
         value = workflow.score(store, ident)
-        with store.connect() as db:
-            row = db.execute(
-                "SELECT payload FROM research_runs WHERE record_id=? "
-                "ORDER BY created_at DESC LIMIT 1",
-                (ident,),
-            ).fetchone()
         return {
             "score": value,
-            "research": json.loads(row[0]) if row else None,
+            "research": workflow.latest_research(store, ident),
             "chat_candidates": chat_workflow.candidates(store, ident),
             "dynamics": chat_workflow.dynamics(store, ident),
             "screening": screening.latest(store, ident),

@@ -297,26 +297,36 @@ def create_app(root: Path | None = None):
     def records(dataset: Literal["imported", "demo", "web"] = "imported"):
         excluded = stoplist.entries(store)
         from radar.web import workflow
+        from radar.web.coverage import all_records, summarize
 
         workflow.initialize(store)
+        coverage = all_records(store)
         with store.connect() as db:
             scores = {
                 r["record_id"]: {**json.loads(r["payload"]), "updated_at": r["updated_at"]}
                 for r in db.execute("SELECT * FROM candidate_scores")
             }
         rows = [
-            {**r, "blocked": stoplist.match(r, excluded), "ranking": scores.get(r["id"])}
+            {
+                **r,
+                "blocked": stoplist.match(r, excluded),
+                "ranking": scores.get(r["id"]),
+                "source_coverage": coverage.get(r["id"], summarize([])),
+            }
             for r in store.records(dataset)
         ]
         return sorted(rows, key=lambda r: -(r["ranking"] or {}).get("rank_score", 0))
 
     @app.get("/api/records/{ident}")
     def record(ident: str):
+        from radar.web.coverage import all_records, summarize
+
         record = store.get(ident)
         return {
             **record,
             "dossier": dossier(store, ident),
             "blocked": stoplist.blocked(store, record),
+            "source_coverage": all_records(store).get(ident, summarize([])),
         }
 
     @app.put("/api/records/{ident}")

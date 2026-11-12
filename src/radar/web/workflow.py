@@ -46,6 +46,19 @@ def initialize(store):
 CACHE_LOCK = threading.RLock()
 
 
+def latest_research(store, ident):
+    """A cheap discovery pass must not erase an existing detailed dossier."""
+    initialize(store)
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT payload FROM research_runs WHERE record_id=? ORDER BY "
+            "CASE WHEN json_extract(payload,'$.depth')='cluster' THEN 1 ELSE 0 END, "
+            "created_at DESC LIMIT 1",
+            (ident,),
+        ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
 def cached(store, key, operation, run_id, service):
     with CACHE_LOCK:
         return _cached(store, key, operation, run_id, service)
@@ -244,7 +257,13 @@ def query_documents(store, query, run_id, client, reader=fetch_page, max_pages=4
         "search",
     )
     documents = []
-    for row in rows[:max_pages]:
+    # A single site's several result pages must not crowd out other voices.
+    first_per_host, rest, seen_hosts = [], [], set()
+    for row in rows:
+        host = (urlsplit(row["url"]).hostname or "").removeprefix("www.")
+        (rest if host in seen_hosts else first_per_host).append(row)
+        seen_hosts.add(host)
+    for row in [*first_per_host, *rest][:max_pages]:
         url = canonical_url(row["url"])
         page, _ = load_page(store, url, reader)
         full = page.status == "loaded"
@@ -278,54 +297,77 @@ def research(
     searcher=query_documents,
     extractor=extract,
     cancelled=lambda: False,
+    depth="deep",
 ):
     initialize(store)
     record = store.get(ident)
     if record["dataset"] == "demo":
         return {"status": "demo", "note": "Внешнее исследование учебного объекта отключено"}
-    if stoplist.blocked(store, record):
+    if stoplist.blocked(store, record) or record["status"] in {"rejected", "closed", "later"}:
         raise ValueError("Объект в стоп-листе")
+    if depth not in {"cluster", "deep"}:
+        raise ValueError("Неизвестная глубина исследования")
     cfg, model = configuration(store.root), model_config(store.root)["extract"]
     if not all(
         cfg.get(k) for k in ["YANDEX_SEARCH_API_KEY", "YANDEX_FOLDER_ID", "OPENROUTER_API_KEY"]
     ):
         raise ValueError("Для исследования нужны ключи поиска и модели")
-    scope = record["name"] + " " + record["region"] + " " + (record.get("building") or "")
+    name = record["name"].replace('"', " ").strip()
+    scope = '"' + name + '" ' + record["region"] + " " + (record.get("building") or "")
     questions = [
-        scope + " проектная декларация первоначальный срок новый срок ввод передача ключей",
+        scope + " официальный сайт проектная декларация срок ввода передача ключей",
         scope + " отзывы дольщиков форум жалобы приемка недостатки",
         scope + " официальный сайт ход строительства ответ застройщика сроки",
         scope + " телеграм чат жителей соседей",
         scope + " почему перенесли сроки причина задержки объяснение застройщика",
         scope + " история переноса сроки первоначально уведомление дольщиков",
     ]
+    if depth == "cluster":
+        questions = questions[:2]
     owns = client is None
     client = client or httpx.Client(timeout=90)
-    documents, errors = [], []
+    documents, errors, completed_questions = [], [], []
+    cache_hits = 0
     try:
         for query in questions:
             if cancelled():
                 raise ScanCancelled()
-            rows, _ = searcher(store, query, run_id, client, reader)
+            try:
+                rows, hit = searcher(store, query, run_id, client, reader)
+            except ScanCancelled:
+                raise
+            except ValueError as exc:
+                errors.append({"stage": "search", "detail": str(exc)})
+                if isinstance(exc, BudgetExceeded):
+                    break
+                continue
+            completed_questions.append(query)
+            cache_hits += bool(hit)
             documents.extend(rows)
         documents = list({d["url"]: d for d in documents}.values())
+        # Keep every query represented, while bounding input tokens for each paid pass.
+        text_limit = 32000 if depth == "cluster" else 64000
+        per_document = max(1, text_limit // max(1, len(documents)))
+        documents = [{**d, "text": research_excerpt(d["text"], per_document)} for d in documents]
+        persisted = {"signals_added": 0, "record_ids": []}
         if documents:
-            result, _ = cached(
-                store,
-                ["followup-extract-v1", model, documents],
-                lambda: extractor(client, cfg, model, documents).model_dump(mode="json"),
-                run_id,
-                "model",
-            )
-            findings = Findings.model_validate(result)
-            # A follow-up may discover another building. Never force its facts onto this record.
-            persisted = persist_findings(store, findings.objects, documents, "web")
-        else:
-            persisted = {"signals_added": 0, "record_ids": []}
+            try:
+                result, _ = cached(
+                    store,
+                    ["followup-extract-v2", model, documents],
+                    lambda: extractor(client, cfg, model, documents).model_dump(mode="json"),
+                    run_id,
+                    "model",
+                )
+                findings = Findings.model_validate(result)
+                # Never force facts from a different location or building onto this record.
+                persisted = persist_findings(store, findings.objects, documents, "web")
+            except ValueError as exc:
+                errors.append({"stage": "extract", "detail": str(exc)})
         from radar.web.research_answers import Answers, extract_answers, validate_answers
 
         answers = []
-        if documents and extractor is extract:
+        if documents and extractor is extract and depth == "deep":
             try:
                 response, _ = cached(
                     store,
@@ -349,8 +391,12 @@ def research(
                     errors.append({"stage": "answer", "detail": str(exc)})
         value = {
             "answers": answers,
+            "depth": depth,
             "status": "partial" if errors else "completed",
             "questions": questions,
+            "questions_completed": len(completed_questions),
+            "search_cache_hits": cache_hits,
+            "text_characters": sum(len(d["text"]) for d in documents),
             "documents": [
                 {
                     "url": d["url"],
@@ -386,8 +432,9 @@ def complete_scan(
     telegram=None,
     cancelled=lambda: False,
     progress=lambda *a: None,
-    top=5,
+    top=10,
     shortlist=8,
+    deep_top=3,
 ):
     ids = list(result["record_ids"])
     regions = set(result.get("coverage", {}).get("regions", []))
@@ -396,9 +443,17 @@ def complete_scan(
 
     # Missing date/score is a reason to investigate, not to skip chats entirely.
     seed_ids = set(result.get("seed_ids", [])[:2])
+    initialize(store)
+    with store.connect() as db:
+        last_researched = dict(
+            db.execute(
+                "SELECT record_id,MAX(created_at) FROM research_runs GROUP BY record_id"
+            ).fetchall()
+        )
     queue = sorted(
         [c for c in initial if not c["excluded"]],
         key=lambda c: (
+            last_researched.get(c["record_id"], ""),
             c["record_id"] not in seed_ids,
             store.get(c["record_id"])["region"] in {"Не установлен", "Не указан", "Россия", ""},
         ),
@@ -411,7 +466,8 @@ def complete_scan(
         cancelled=cancelled,
         progress=progress,
     )
-    enriched, errors = [], []
+    enriched, errors, checked_ids = [], [], []
+    budget_stopped = False
     for row in chat_result["records"]:
         errors.extend(
             {"stage": "chats", "detail": error, "record_id": row["record_id"]}
@@ -421,11 +477,17 @@ def complete_scan(
         if cancelled():
             raise ScanCancelled()
         progress(
-            "research", 86 + int(index * 10 / max(1, top)), "Уточняем кандидата " + str(index + 1)
+            "research",
+            85 + int(index * 7 / max(1, top)),
+            f"Собираем источники по ЖК {index + 1} из {len(queue)}",
         )
         try:
-            row = researcher(store, candidate["record_id"], run_id, cancelled=cancelled)
+            row = researcher(
+                store, candidate["record_id"], run_id, cancelled=cancelled, depth="cluster"
+            )
+            checked_ids.append(candidate["record_id"])
             enriched.append({"record_id": candidate["record_id"], **row})
+            errors.extend({**e, "record_id": candidate["record_id"]} for e in row.get("errors", []))
             related = [
                 ident
                 for ident in row.get("related_ids", [])
@@ -438,7 +500,58 @@ def complete_scan(
                 {"stage": "research", "detail": str(exc), "record_id": candidate["record_id"]}
             )
             if isinstance(exc, BudgetExceeded):
+                budget_stopped = True
                 break
+    # Deepen only candidates with evidence, then rotate the remainder on later scans.
+    from radar.web.coverage import all_records, summarize
+    from radar.web.operations import remaining_calls
+
+    coverage = all_records(store)
+    deep_queue = sorted(
+        [
+            c
+            for c in rank(store, checked_ids)
+            if not c["excluded"] and coverage.get(c["record_id"], {}).get("publications", 0)
+        ],
+        key=lambda c: (
+            not coverage[c["record_id"]]["multiple"],
+            -c.get("rank_score", 0),
+        ),
+    )[:deep_top]
+    deepened = []
+    for index, candidate in enumerate(deep_queue if not budget_stopped else []):
+        if cancelled():
+            raise ScanCancelled()
+        if remaining_calls(store, run_id) < 6:
+            errors.append(
+                {
+                    "stage": "research",
+                    "detail": "Подробный разбор отложен: достигнут лимит вызовов.",
+                }
+            )
+            break
+        progress("research", 93 + index * 2, "Подробно разбираем выбранный ЖК")
+        try:
+            row = researcher(
+                store, candidate["record_id"], run_id, cancelled=cancelled, depth="deep"
+            )
+            deepened.append(candidate["record_id"])
+            enriched.append({"record_id": candidate["record_id"], **row})
+            errors.extend({**e, "record_id": candidate["record_id"]} for e in row.get("errors", []))
+            related = [
+                i
+                for i in row.get("related_ids", [])
+                if not regions
+                or store.get(i)["region"] in regions | {"Не установлен", "Россия", ""}
+            ]
+            ids = list(dict.fromkeys([*ids, *related]))
+        except ValueError as exc:
+            errors.append(
+                {"stage": "research", "detail": str(exc), "record_id": candidate["record_id"]}
+            )
+            if isinstance(exc, BudgetExceeded):
+                break
+    coverage = all_records(store)
     ordered = rank(store, ids)
     selected = [c["record_id"] for c in ordered if not c["excluded"] and c["needs_research"]][
         :shortlist
@@ -452,6 +565,14 @@ def complete_scan(
         "rankings": ordered,
         "shortlist": selected,
         "research": enriched,
+        "object_research": {
+            "checked": len(checked_ids),
+            "deepened": len(deepened),
+            "deferred": max(0, len([c for c in initial if not c["excluded"]]) - len(checked_ids)),
+            "max_search_requests": top * 2 + deep_top * 4,
+            "max_model_calls": top + deep_top * 2,
+            "coverage": {i: coverage.get(i, summarize([])) for i in ids},
+        },
         "chat_screening": chat_result,
         "errors": result.get("errors", []) + errors,
         "status": "partial"

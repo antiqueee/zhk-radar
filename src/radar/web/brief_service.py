@@ -75,15 +75,9 @@ def payload_for(store, ident):
             "не подтверждает подлинность документа. Предложения — гипотезы для обсуждения."
         ),
     )
-    from radar.web.workflow import initialize
+    from radar.web.workflow import latest_research
 
-    initialize(store)
-    with store.connect() as db:
-        followup = db.execute(
-            "SELECT payload FROM research_runs WHERE record_id=? ORDER BY created_at DESC LIMIT 1",
-            (ident,),
-        ).fetchone()
-    payload["followup"] = json.loads(followup[0]) if followup else None
+    payload["followup"] = latest_research(store, ident)
     payload["report"] = build_report(payload, library)
     return payload
 

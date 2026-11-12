@@ -22,3 +22,13 @@
 #conversation-form textarea{width:100%;box-sizing:border-box}#conversation-form button{margin-top:14px}
 
 #object-conversation{margin-top:28px;padding-top:20px;border-top:1px solid #e6e8e9}
+
+/* Clickable dossiers keep secondary decisions quiet and keyboard-accessible. */
+.record[data-card] { cursor: pointer; transition: background .15s ease; }
+.record[data-card]:hover { background: #f7f8f8; }
+.record[data-card]:focus-visible { outline: 2px solid #254958; outline-offset: 3px; }
+.signal-wrap > .caption { display: block; margin-top: 9px; }
+.record-actions [data-disposition] { color: #707776; font-size: 12px; }
+.disposition-action { display: flex; justify-content: flex-end; margin-bottom: 10px; }
+
+.disposition-action [data-disposition] { border: 0; background: none; color: #66716f; padding: 8px 0; font: inherit; font-size: 13px; cursor: pointer; }

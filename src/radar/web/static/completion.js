@@ -5,7 +5,7 @@ function applyRole() {
   const viewer=identity.role==='viewer';
   document.querySelectorAll('[data-action="settings"]').forEach(el=>el.hidden=identity.role!=='admin');
   if(viewer){
-    document.querySelectorAll('form, [data-pdf], [data-op], [data-advanced], [data-completion]:not([data-completion="logout"]), [data-action="scan"], [data-action="demo-scan"], [data-action="import"], [data-action="chat-import"], [data-action="chat-demo"]').forEach(el=>el.hidden=true);
+    document.querySelectorAll('form, [data-disposition], [data-pdf], [data-op], [data-advanced], [data-completion]:not([data-completion="logout"]), [data-action="scan"], [data-action="demo-scan"], [data-action="import"], [data-action="chat-import"], [data-action="chat-demo"]').forEach(el=>el.hidden=true);
   }
 }
 async function loadCompletion(id) {

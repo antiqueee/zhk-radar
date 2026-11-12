@@ -66,10 +66,16 @@ def remove(store, ident):
 
 
 def match(record, rows):
-    for row in rows:
+    # A per-object restore must never silently remove an exclusion for the whole developer.
+    for row in sorted(rows, key=lambda r: r["kind"] != "developer"):
         value = record["id"] if row["kind"] == "record" else record["developer"]
         if row["normalized"] == normalized(value):
-            return {"id": row["id"], "reason": row["reason"], "note": row["note"]}
+            return {
+                "id": row["id"],
+                "kind": row["kind"],
+                "reason": row["reason"],
+                "note": row["note"],
+            }
     return None
 
 
