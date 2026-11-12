@@ -79,6 +79,13 @@ def payload_for(store, ident):
 
     payload["followup"] = latest_research(store, ident)
     payload["report"] = build_report(payload, library)
+    from radar.briefs import methods
+    from radar.web.evidence_context import sources_for
+
+    payload["agency_knowledge"] = methods.select(
+        sources_for(payload), payload["report"]["products"]
+    )
+    methods.apply_to_report(payload["report"], payload["agency_knowledge"])
     return payload
 
 

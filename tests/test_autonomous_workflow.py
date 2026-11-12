@@ -489,3 +489,34 @@ def test_invalid_critic_cannot_approve_but_preserves_internal_draft(store):
     assert brief["payload"]["author"]["status"] == "manual"
     assert brief["payload"]["author"]["attempts"][0]["verdict"] == "manual"
     assert not review.operator_approved(store, brief["id"])
+
+
+def test_copied_agency_method_gets_one_cached_repair(store):
+    real(store)
+    configure_author(store)
+    calls = []
+
+    def writer(client, cfg, model, payload, sources, matches, criticism):
+        calls.append("writer")
+        value = valid_author(payload, sources)
+        if not criticism:
+            method = next(
+                m
+                for m in payload["agency_knowledge"]["methods"]
+                if m["id"] in payload["report"]["products"][0]["method_candidates"]
+            )
+            value.products[0].tasks = method["steps"]
+        else:
+            assert criticism["issues"][0]["block"] == "Адаптация"
+        return value
+
+    def critic(*args):
+        calls.append("critic")
+        return review.ReviewResult(verdict="passed", issues=[])
+
+    first = author.generate(store, "demo-1", "methods-test", writer, critic, client=object())
+    second = author.generate(store, "demo-1", "methods-repeat", writer, critic, client=object())
+    assert first["id"] == second["id"]
+    assert calls == ["writer", "writer", "critic"]
+    assert first["payload"]["author"]["status"] == "reviewed"
+    assert len(first["payload"]["author"]["attempts"]) == 2

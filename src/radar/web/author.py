@@ -8,12 +8,12 @@ import threading
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from radar.briefs.report import text_topics
 from radar.web import cases, review
 from radar.web.brief_service import payload_for
 from radar.web.chats import redact
 from radar.web.configuration import configuration, model_config
 from radar.web.discovery import call_json
+from radar.web.evidence_context import sources_for as sources_for
 from radar.web.model_output import parse_model_json, structured_format
 from radar.web.pdf import render_pdf
 from radar.web.workflow import cached
@@ -21,15 +21,20 @@ from radar.web.workflow import cached
 LOCK = threading.Lock()
 
 
+class UnadaptedMethodError(ValueError):
+    """A valid structure which needs one bounded editorial repair."""
+
+
 class ProductText(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: str = Field(max_length=10)
-    rationale: str = Field(min_length=30, max_length=900)
+    rationale: str = Field(min_length=30, max_length=260)
     tasks: list[str] = Field(min_length=3, max_length=6)
-    result: str = Field(min_length=30, max_length=800)
-    measurement: str = Field(min_length=20, max_length=700)
+    result: str = Field(min_length=30, max_length=180)
+    measurement: str = Field(min_length=20, max_length=140)
     source_ids: list[str] = Field(min_length=1, max_length=8)
     case_ids: list[str] = Field(default_factory=list, max_length=2)
+    method_ids: list[str] = Field(default_factory=list, max_length=2)
 
 
 class GroundedParagraph(BaseModel):
@@ -51,59 +56,6 @@ class Authored(BaseModel):
     analysis: SituationAnalysis | None = None
 
 
-def sources_for(payload):
-    sources = {}
-    for signal in payload.get("dossier", {}).get("signals", []):
-        ident = signal["source_id"]
-        if ident not in sources:
-            sources[ident] = {
-                "id": ident,
-                "text": signal["quote"],
-                "topics": list(signal["topics"]),
-                "kind": signal["source_kind"],
-                "url": signal["source_url"],
-            }
-        else:
-            source = sources[ident]
-            if signal["quote"] not in source["text"]:
-                source["text"] += "\n" + signal["quote"]
-            source["topics"] = sorted(set(source["topics"]) | set(signal["topics"]))
-    for e in payload.get("evidence", []):
-        ident = "evidence:" + str(e["id"])
-        sources[ident] = {
-            "id": ident,
-            "text": e["quote"],
-            "topics": payload["topics"],
-            "kind": "operator_supplied",
-            "url": e["url"],
-        }
-    for answer in (payload.get("followup") or {}).get("answers", []):
-        ident = answer["source_id"]
-        if ident in sources:
-            if answer["quote"] not in sources[ident]["text"]:
-                sources[ident]["text"] += "\n" + answer["quote"]
-        else:
-            sources[ident] = {
-                "id": ident,
-                "text": answer["quote"],
-                "topics": [],
-                "kind": answer["kind"],
-                "url": answer["url"],
-            }
-    for i, e in enumerate((payload.get("chat_stats") or {}).get("examples", [])):
-        ident = "chat:" + str(i)
-        sources[ident] = {
-            "id": ident,
-            "text": redact(e["text"], []),
-            "topics": [e["topic"]],
-            "kind": "chat",
-            "url": e.get("url"),
-        }
-    for source in sources.values():
-        source["topics"] = sorted(set(source["topics"]) | text_topics(source["text"]))
-    return list(sources.values())
-
-
 def write_model(client, cfg, model, payload, sources, matches, criticism):
     prompt = (
         "Подготовь стратегическое предложение конфликтологического консалтинга для конкретного ЖК. "
@@ -115,6 +67,21 @@ def write_model(client, cfg, model, payload, sources, matches, criticism):
         "реестр обещаний, штаб передачи, ранние сигналы коллективных обращений в открытых чатах. "
         "practice_sources — методические основания услуги, а не "
         "доказательства ситуации на этом ЖК. "
+        "agency_knowledge — отобранные методы Мегаполиса, а не текущие факты или успешные кейсы. "
+        "Для каждого продукта выбери 1–2 method_ids из его method_candidates, если они есть. "
+        "Проверь условия when: тематическое совпадение само по себе не доказывает применимость. "
+        "Если ни один метод не применим, оставь method_ids пустым и предложи условный шаг. "
+        "Не копируй карточку: свяжи конкретную боль и корпус с бизнес-целью, выбери механики "
+        "и опиши их применение к этому случаю. Согласование с инженером/юристом/УК и доступ "
+        "на площадку обозначай как необходимые условия, не как уже полученные возможности. "
+        "Учитывай resource_choice: не предлагай постоянную полевую команду, когда достаточно "
+        "обучения или разового выезда. Можно предложить одну новую комбинацию методов "
+        "или creative_seed в одном из трёх шагов, пометив «Идея для пилота». "
+        "Такой шаг должен быть выполним имеющимися средствами и связан с источником боли. "
+        "Нельзя представлять идею как уже реализованную практику или гарантированный эффект. "
+        "Архивные AG-идентификаторы запрещены в source_ids. "
+        "method_ids (M01 и подобные) — только в поле method_ids, не в тексте rationale или задач. "
+        "Не переносить чужие цены, даты, контакты, нормативы команды и утверждения об успехе. "
         "Отсутствие информации о процессе не доказывает, что у компании нет такого процесса. "
         "Не вставляй названия зарубежных стандартов в коммерческий текст. "
         "Не утверждай наличие инициативной группы, митинга или причины задержки без источника. "
@@ -140,6 +107,10 @@ def write_model(client, cfg, model, payload, sources, matches, criticism):
         "Заполни analysis: overview — связный разбор ситуации до 500 знаков с источниками. "
         "causes — только явно объяснённая источником причина с атрибуцией; иначе null. "
         "chronology — до 3 датированных изменений, по 200 знаков, в хронологическом порядке. "
+        "Если даты событий в свидетельствах неизвестны, chronology оставь пустым. "
+        "Не называй недатированный отзыв ранним или текущим. Квартал без года не является "
+        "актуальной датой. Агрегатор недвижимости не является официальным источником девелопера: "
+        "различай его сведения, проектную декларацию и сообщение самой компании. "
         "Не выводи дату публикации из даты плана и не объявляй текущим старый срок. "
         "Если даты в источниках расходятся, объясни расхождение, не выбирай дату произвольно. "
         "В каждом абзаце source_ids; только подтверждающие этот абзац материалы. "
@@ -167,6 +138,7 @@ def write_model(client, cfg, model, payload, sources, matches, criticism):
                             "building": payload.get("building"),
                             "situation": payload["situation"],
                             "products": payload["report"]["products"],
+                            "agency_knowledge": payload.get("agency_knowledge"),
                             "sources": sources,
                             "cases": matches,
                             "criticism": criticism,
@@ -218,6 +190,16 @@ def validate(text, payload, sources, matches):
             raise ValueError("Предложение не связано с темами выбранных источников")
         if not set(product.case_ids) <= approved_cases:
             raise ValueError("Автор указал неутверждённый кейс")
+        if not set(product.method_ids) <= set(base.get("method_candidates", [])):
+            raise ValueError("Автор указал метод вне подобранной библиотеки продукта")
+        available_methods = (payload.get("agency_knowledge") or {}).get("methods", [])
+        if any(product.tasks == method["steps"] for method in available_methods):
+            raise UnadaptedMethodError(
+                f"Продукт {product.code}: автор скопировал метод без адаптации к объекту. "
+                "Перепиши шаги под конкретную проблему и аудиторию из source_ids; "
+                "укажи, какой вопрос обсуждать, с кем и какое действие довести до результата. "
+                "Не добавляй неподтверждённые обстоятельства."
+            )
         fields = [product.rationale, *product.tasks, product.result, product.measurement]
         if any(not 30 <= len(t) <= 450 for t in product.tasks):
             raise ValueError("Шаги автора не соответствуют ограничениям длины")
@@ -258,14 +240,24 @@ def generate(store, ident, run_id, writer=write_model, critic=review.review_mode
         for attempt in range(2):
             raw, _ = cached(
                 store,
-                ["author-v6", base_hash, author, sources, matches, criticism],
+                ["author-v8", base_hash, author, sources, matches, criticism],
                 lambda criticism=criticism: writer(
                     client, cfg, author, payload, sources, matches, criticism
                 ).model_dump(),
                 run_id,
                 "model",
             )
-            draft = validate(Authored.model_validate(raw), payload, sources, matches)
+            try:
+                draft = validate(Authored.model_validate(raw), payload, sources, matches)
+            except UnadaptedMethodError as exc:
+                if attempt == 1:
+                    raise
+                criticism = review.ReviewResult(
+                    verdict="revise",
+                    issues=[review.Issue(block="Адаптация", severity="blocker", reason=str(exc))],
+                ).model_dump()
+                attempts.append(criticism)
+                continue
             candidate = json.loads(json.dumps(payload))
             if draft.analysis:
                 analysis = draft.analysis.model_dump()
@@ -289,10 +281,11 @@ def generate(store, ident, run_id, writer=write_model, critic=review.review_mode
                     rationale=edited.rationale,
                     author_source_ids=edited.source_ids,
                     case_ids=edited.case_ids,
+                    method_ids=edited.method_ids,
                 )
             critique, _ = cached(
                 store,
-                ["author-critic-v1", candidate, checker, sources],
+                ["author-critic-v2", candidate, checker, sources],
                 lambda candidate=candidate: critic(
                     client, cfg, checker, candidate, sources
                 ).model_dump(),

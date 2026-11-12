@@ -120,6 +120,14 @@ def write_reply(client, cfg, model, context):
                     "одной жалобы. Действия агентства оформляй kind=proposal с конкретной пользой: "
                     "диалог, исполнение договорённостей, восстановление доверия, ранняя реакция. "
                     "Не продавай выяснение статуса как главное УТП. Не "
+                    "копируй agency_knowledge: это методы Мегаполиса, не доказательства "
+                    "по объекту. Адаптируй механику под вопрос, корпус и источник боли. "
+                    "Учитывай when, client_inputs и resource_choice; метод, найденный только "
+                    "по вопросу (question_only), применяй лишь как условный сценарий. "
+                    "AG-ссылки не могут быть source_ids фактических блоков. Новую комбинацию "
+                    "или creative_seed называй идеей пилота, объясни условия и способ оценки. "
+                    "Не выдавай её за выполненный кейс. Не переноси архивные цены и факты. "
+                    "Не предлагай скрытых аккаунтов, фиктивных отзывов или подавления критики. Не "
                     "выдумывай ссылки или источники. "
                     "Если сведений нет, используй kind=limitation и "
                     "предложи предметный следующий шаг. "
@@ -195,12 +203,15 @@ def answer(store, ident, run_id, writer=write_reply, searcher=query_documents, c
         unique = {s["id"]: s for s in sources}
         # Prefer the new search and recent material, disclose the bounded context.
         selected = list(unique.values())[-30:]
+        from radar.briefs import methods
+
         context = {
             "name": payload["name"],
             "region": payload["region"],
             "building": payload.get("building"),
             "question": row["question"],
             "sources": selected,
+            "agency_knowledge": methods.select(selected, question=row["question"]),
             "history": [
                 {"question": t["question"], "answer": t["answer"]}
                 for t in history(store, ident)
@@ -209,7 +220,7 @@ def answer(store, ident, run_id, writer=write_reply, searcher=query_documents, c
         }
         raw, _ = cached(
             store,
-            ["object-conversation-v3", model, context],
+            ["object-conversation-v4", model, context],
             lambda: writer(client, cfg, model, context).model_dump(),
             run_id,
             "model",
@@ -232,6 +243,7 @@ def answer(store, ident, run_id, writer=write_reply, searcher=query_documents, c
             "source_count": len(selected),
             "available_sources": len(unique),
             "queries": queries,
+            "methodology_fingerprint": context["agency_knowledge"]["fingerprint"],
             "meaning": "Ответ по сохранённым материалам; рекомендации — предложения аналитика.",
         }
         with store.connect() as db:
