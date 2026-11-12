@@ -354,6 +354,7 @@ def create_app(root: Path | None = None):
 
     telegram = TelegramReader(store, author_salt)
     app.state.telegram = telegram
+    jobs.telegram = telegram
     tasks = advanced.install(app, store)
     from radar.web.automation import DailyWorker
 

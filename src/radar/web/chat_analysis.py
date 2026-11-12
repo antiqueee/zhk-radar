@@ -78,7 +78,19 @@ def classify(client, cfg, model, messages, topics):
         raise ValueError("Модель вернула некорректную разметку. Сообщения не изменены") from None
 
 
-def analyze(store, record_id, classifier=classify, client=None, run_id=None):
+def analyze(
+    store,
+    record_id,
+    classifier=classify,
+    client=None,
+    run_id=None,
+    *,
+    max_messages=120,
+    text_budget=None,
+    newest_first=False,
+):
+    if not 1 <= max_messages <= 120 or (text_budget is not None and text_budget < 10000):
+        raise ValueError("Некорректный лимит разметки")
     if not LOCK.acquire(blocking=False):
         raise ValueError("Разбор чата уже выполняется")
     owns = client is None
@@ -103,6 +115,7 @@ def analyze(store, record_id, classifier=classify, client=None, run_id=None):
                 "DELETE FROM chat_label_cache WHERE created_at IS NULL OR created_at<?",
                 ((datetime.now(UTC) - timedelta(days=150)).isoformat(),),
             )
+            order = "DESC" if newest_first else "ASC"
             messages = [
                 dict(r)
                 for r in db.execute(
@@ -110,10 +123,22 @@ def analyze(store, record_id, classifier=classify, client=None, run_id=None):
                     "l.record_id=m.record_id AND l.chat_id=m.chat_id AND l.message_id=m.message_id "
                     "WHERE m.record_id=? AND m.topic='не_размечено' AND m.text!='' "
                     "AND m.sent_at>=? AND l.message_id IS NULL "
-                    "ORDER BY m.sent_at,m.message_id LIMIT 121",
-                    (record_id, (datetime.now(UTC) - timedelta(days=30)).isoformat()),
+                    f"ORDER BY m.sent_at {order},m.message_id {order} LIMIT ?",
+                    (
+                        record_id,
+                        (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+                        max_messages + 1,
+                    ),
                 )
             ]
+        available = len(messages)
+        selected, size = [], 0
+        for message in messages[:max_messages]:
+            if text_budget is not None and size + len(message["text"]) > text_budget:
+                break
+            selected.append(message)
+            size += len(message["text"])
+        messages = selected
         topics = {
             t for o in load_offers(store.root / "config/offers.yaml").offers for t in o.pain_topics
         }
@@ -170,7 +195,8 @@ def analyze(store, record_id, classifier=classify, client=None, run_id=None):
                     ).rowcount
         return {
             "labelled": done,
-            "more": len(messages) > 120,
+            "more": available > len(messages),
+            "characters": size,
             "external_requests": calls,
             "cache_hits": cached,
             "method": "model",

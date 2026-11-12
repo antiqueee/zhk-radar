@@ -16,6 +16,7 @@ ACTIVE = ("queued", "running")
 class JobRunner:
     def __init__(self, store):
         self.store = store
+        self.telegram = None
         initialize_sources(store)
         self.lease = None
         self.stop = threading.Event()
@@ -193,6 +194,7 @@ class JobRunner:
                         self.store,
                         result,
                         ident,
+                        telegram=self.telegram,
                         cancelled=lambda: self.cancelled(ident),
                         progress=lambda stage, percent, detail: self.progress(
                             ident, stage, percent, detail

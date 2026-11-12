@@ -17,6 +17,7 @@ from radar.web import (
     external_ops,
     extra_sources,
     money,
+    screening,
     workflow,
 )
 from radar.web.tasks import TaskRunner
@@ -69,6 +70,7 @@ def install(app, store):
             "research": json.loads(row[0]) if row else None,
             "chat_candidates": chat_workflow.candidates(store, ident),
             "dynamics": chat_workflow.dynamics(store, ident),
+            "screening": screening.latest(store, ident),
         }
 
     @app.post("/api/records/{ident}/chat-candidates")

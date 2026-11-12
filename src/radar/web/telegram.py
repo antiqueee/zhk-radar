@@ -1,6 +1,7 @@
 """Read-only public Telegram source adapter; credentials stay in .env."""
 
 import asyncio
+import json
 import re
 import threading
 import time
@@ -177,6 +178,21 @@ class TelegramReader:
             db.execute(
                 "DELETE FROM telegram_links WHERE record_id=? AND url=?", (record_id, data.url)
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS chat_candidates(record_id TEXT,url TEXT,"
+                "payload TEXT,status TEXT,PRIMARY KEY(record_id,url))"
+            )
+            db.execute(
+                "INSERT INTO chat_candidates VALUES(?,?,?,'rejected') "
+                "ON CONFLICT(record_id,url) DO UPDATE SET status='rejected'",
+                (
+                    record_id,
+                    data.url,
+                    json.dumps(
+                        {"url": data.url, "title": data.url, "note": "Ссылка удалена оператором"}
+                    ),
+                ),
+            )
         return self.links(record_id)
 
     def inspect(self, url):
@@ -186,11 +202,16 @@ class TelegramReader:
             from telethon.tl.functions.channels import GetFullChannelRequest
 
             entity = await client.get_entity(url.rsplit("/", 1)[1])
-            if not isinstance(entity, Channel) or not entity.username:
+            usernames = {getattr(entity, "username", "") or ""}
+            usernames.update(u.username for u in getattr(entity, "usernames", []) or [] if u.active)
+            if not isinstance(entity, Channel) or url.rsplit("/", 1)[1] not in {
+                u.lower() for u in usernames
+            }:
                 raise ValueError("Это не публичная группа или канал")
             full = await client(GetFullChannelRequest(entity))
             return {
                 "url": url,
+                "peer_id": str(entity.id),
                 "title": entity.title,
                 "description": (full.full_chat.about or "")[:1000],
                 "participants": full.full_chat.participants_count,
@@ -201,7 +222,7 @@ class TelegramReader:
 
         return self.invoke(action)
 
-    def sync(self, record_id, url, limit=1000):
+    def sync(self, record_id, url, limit=1000, *, recent=False):
         if not configuration(self.store.root).get("TG_SESSION"):
             raise ValueError("Авторизуйте читатель Telegram в подключениях")
         link = next((r for r in self.links(record_id) if r["url"] == url), None)
@@ -222,12 +243,14 @@ class TelegramReader:
                 raise ValueError(
                     "Ссылка теперь ведёт на другой чат. Удалите её и проверьте источник"
                 )
-            since = datetime.now(UTC) - timedelta(days=90)
+            since = datetime.now(UTC) - timedelta(days=30)
             messages, cursor, seen = [], link["cursor"], 0
-            kwargs = dict(limit=limit + 1, min_id=cursor, reverse=True)
-            if not cursor:
+            kwargs = dict(limit=limit + 1, min_id=cursor, reverse=not recent)
+            if not recent:
                 kwargs["offset_date"] = since
             async for message in client.iter_messages(entity, **kwargs):
+                if recent and message.date < since:
+                    break
                 seen += 1
                 if seen > limit:
                     break
@@ -257,7 +280,7 @@ class TelegramReader:
                     (
                         str(entity.id),
                         entity.title,
-                        cursor,
+                        link["cursor"] if recent and seen > limit else cursor,
                         now(),
                         "partial" if seen > limit else "synced",
                         record_id,
@@ -268,6 +291,8 @@ class TelegramReader:
                 "ingest": result,
                 "partial": seen > limit,
                 "read": len(messages),
+                "period_days": 30,
+                "recent_sample": recent and seen > limit,
                 "note": "Без разметки тем и тональности; повторный сбор не дублирует сообщения",
             }
 

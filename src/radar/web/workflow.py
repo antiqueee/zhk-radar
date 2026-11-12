@@ -359,6 +359,7 @@ def complete_scan(
     run_id,
     *,
     researcher=research,
+    telegram=None,
     cancelled=lambda: False,
     progress=lambda *a: None,
     top=5,
@@ -366,21 +367,33 @@ def complete_scan(
 ):
     ids = list(result["record_ids"])
     initial = rank(store, ids)
+    from radar.web.screening import screen
+
+    queue = [c for c in initial if c["needs_research"]][:top]
+    chat_result = screen(
+        store,
+        [c["record_id"] for c in queue],
+        run_id,
+        telegram,
+        cancelled=cancelled,
+        progress=progress,
+    )
     enriched, errors = [], []
-    for index, candidate in enumerate([c for c in initial if c["needs_research"]][:top]):
+    for row in chat_result["records"]:
+        errors.extend(
+            {"stage": "chats", "detail": error, "record_id": row["record_id"]}
+            for error in row["errors"]
+        )
+    for index, candidate in enumerate(queue):
         if cancelled():
             raise ScanCancelled()
         progress(
-            "research", 80 + int(index * 15 / max(1, top)), "Уточняем кандидата " + str(index + 1)
+            "research", 86 + int(index * 10 / max(1, top)), "Уточняем кандидата " + str(index + 1)
         )
         try:
             row = researcher(store, candidate["record_id"], run_id, cancelled=cancelled)
             enriched.append({"record_id": candidate["record_id"], **row})
             ids = list(dict.fromkeys([*ids, *row.get("related_ids", [])]))
-            from radar.web.chat_workflow import discover_chats
-
-            if researcher is research:
-                discover_chats(store, candidate["record_id"], run_id)
         except ValueError as exc:
             errors.append(
                 {"stage": "research", "detail": str(exc), "record_id": candidate["record_id"]}
@@ -400,6 +413,9 @@ def complete_scan(
         "rankings": ordered,
         "shortlist": selected,
         "research": enriched,
+        "chat_screening": chat_result,
         "errors": result.get("errors", []) + errors,
-        "status": "partial" if errors or result["status"] == "partial" else "completed",
+        "status": "partial"
+        if errors or result["status"] == "partial" or chat_result["status"] == "partial"
+        else "completed",
     }

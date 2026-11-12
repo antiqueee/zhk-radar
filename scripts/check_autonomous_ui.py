@@ -74,6 +74,18 @@ with tempfile.TemporaryDirectory(prefix="radar-autonomy-ui-") as folder:
                 page.locator('[name="author_model"]').fill("test/author")
                 page.get_by_role("button", name="Сохранить подключения", exact=True).click()
                 expect(page.locator("#settings-status")).to_contain_text("Подключения сохранены")
+                page.get_by_text("Раз в неделю и лимиты запросов", exact=True).click()
+                expect(page.locator('#ops-weekly [name="screen_chats"]')).to_be_checked()
+                page.locator('#ops-weekly [name="screen_model_calls"]').fill("0")
+                page.get_by_role("button", name="Сохранить расписание и лимиты", exact=True).click()
+                expect(page.locator("#weekly-status")).to_contain_text("расписание выключено")
+                assert (
+                    page.request.get("http://127.0.0.1:8766/api/operations").json()["settings"][
+                        "screen_model_calls"
+                    ]
+                    == 0
+                )
+                page.get_by_text("Раз в неделю и лимиты запросов", exact=True).click()
                 page.get_by_text("Денежный резерв бюджета", exact=True).click()
                 page.locator('#advanced-budget [name="monthly_usd"]').fill("25")
                 page.get_by_role("button", name="Сохранить бюджет", exact=True).click()

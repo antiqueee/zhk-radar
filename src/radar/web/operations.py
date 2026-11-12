@@ -23,6 +23,8 @@ class OperationsSettings(BaseModel):
     region: str = Field(default="capitals", pattern="^(capitals|moscow|petersburg|russia)$")
     delivery: bool = False
     sync_chats: bool = False
+    screen_chats: bool = True
+    screen_model_calls: int = Field(default=5, ge=0, le=5)
     sync_registry: bool = False
     sync_sheets: bool = False
     per_run: int = Field(default=20, ge=1, le=100)

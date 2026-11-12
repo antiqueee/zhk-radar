@@ -96,6 +96,8 @@ def decision(store, ident, url, accepted, telegram):
         raise ValueError("Кандидат в чаты не найден")
     if accepted:
         telegram.add(ident, link)
+    else:
+        telegram.remove(ident, link)
     with store.connect() as db:
         db.execute(
             "UPDATE chat_candidates SET status=? WHERE record_id=? AND url=?",
