@@ -1,4 +1,28 @@
 /* Additional workflows stay inside Connections and object cards. */
+let telegramQRTimer = null;
+function showTelegramQR(result) {
+  const box=$('#tg-qr-result');if(!box)return;
+  box.replaceChildren();
+  if(result.status==='waiting' && result.image?.startsWith('data:image/svg+xml;base64,')){
+    const img=document.createElement('img');img.src=result.image;img.alt='QR-код для входа в Telegram';img.width=280;img.height=280;img.style.maxWidth='100%';img.style.background='white';box.append(img);
+  }
+  const message=document.createElement('p');message.textContent=result.message||'';box.append(message);
+  $('#ops-tg-qr-password').hidden=result.status!=='password_needed';
+  $('#tg-qr-start').hidden=['starting','waiting','password_needed'].includes(result.status);
+  $('#tg-qr-cancel').hidden=!['starting','waiting','password_needed'].includes(result.status);
+}
+async function watchTelegramQR() {
+  clearTimeout(telegramQRTimer);
+  if(!$('#connections').open)return;
+  try {
+    const result=await api('/telegram/qr');showTelegramQR(result);
+    if(['starting','waiting','password_needed'].includes(result.status))telegramQRTimer=setTimeout(watchTelegramQR,1500);
+  }catch(error){$('#tg-qr-result').textContent=error.message;}
+}
+function showTelegramCode(result) {
+  $('#tg-status').textContent=result.message+(result.resend_available?` Повторную отправку можно запросить через ${result.resend_in} сек.`:' Telegram не предложил другой способ доставки.');
+  $('#tg-resend').hidden=!result.resend_available;
+}
 let benchmarkTimer = null;
 let benchmarkRun = null;
 const opLabels = {waiting:'Поиск выполняется',ready:'Готов к доставке',sent:'Отправлен',local:'Сохранён в приложении',uncertain:'Доставку нужно проверить',delivery_blocked:'Нет подключения бота'};
@@ -14,9 +38,14 @@ async function loadOperations() {
   <details class="operations-section"><summary>Вход в Telegram</summary>
     <p>${tg.session_saved?'Сессия сохранена. Доступ проверяется при чтении чата.':'Сохраните API ID и API Hash выше, затем войдите с отдельного рабочего аккаунта.'}</p>
     <p class="caption">При интернет-скрининге подходящие открытые чаты находятся и читаются автоматически. Ссылку также можно добавить вручную. Приложение не вступает в группы и не отправляет сообщения от вашего аккаунта. При первом чтении — последние 30 дней (порциями); далее только новые сообщения.</p>
-    <form id="ops-tg-login"><label class="field">Номер телефона<input name="phone" type="tel" placeholder="+79991234567" required pattern="[+][1-9][0-9]{7,14}"></label><button class="button" type="submit">Получить код входа</button></form>
+    <button class="button primary" type="button" id="tg-qr-start" data-op="tg-qr-start">Войти по QR-коду</button>
+    <button class="button quiet" type="button" id="tg-qr-cancel" data-op="tg-qr-cancel" hidden>Отменить вход по QR</button>
+    <div id="tg-qr-result" role="status"></div>
+    <form id="ops-tg-qr-password" hidden><label class="field">Пароль двухэтапной проверки Telegram<input name="password" type="password" required autocomplete="off" maxlength="200"></label><button class="button primary" type="submit">Подтвердить пароль</button></form>
+    <details><summary>Войти по номеру телефона</summary><p class="caption">Код может прийти в служебный чат «Telegram» на уже подключённом устройстве. Доставку SMS выбирает Telegram.</p>
+    <form id="ops-tg-login"><label class="field">Номер телефона<input name="phone" type="tel" placeholder="+79991234567" required ></label><button class="button" type="submit">Получить код входа</button></form>
     <form id="ops-tg-confirm"><div class="form-grid"><label class="field">Код из Telegram<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></label><label class="field">Пароль двухэтапной проверки, если запрошен<input name="password" type="password" autocomplete="off"></label></div><button class="button" type="submit">Завершить вход</button></form>
-    <button class="button quiet" data-op="tg-disconnect">Отменить вход / забыть сессию на этом компьютере</button><p class="caption">Удалённую сессию можно отозвать в Telegram → Устройства. Импортированные сообщения останутся в карточках.</p><div id="tg-status" role="status"></div>
+    <button class="button" type="button" id="tg-resend" data-op="tg-resend" hidden>Запросить повторно</button><div id="tg-status" role="status"></div></details><button class="button quiet" data-op="tg-disconnect">Отменить вход / забыть сессию на этом компьютере</button><p class="caption">Удалённую сессию можно отозвать в Telegram → Устройства. Импортированные сообщения останутся в карточках.</p>
   </details>
   <details class="operations-section"><summary>Раз в неделю и лимиты запросов</summary>
     <p>Расписание работает, пока приложение запущено и компьютер не спит. Пропущенный срок обрабатывается при следующем запуске, без серии догоняющих прогонов.</p>
@@ -44,6 +73,7 @@ async function loadOperations() {
     <p class="caption">До 12 поисковых вызовов и 2 вызовов моделей. Ключи Perplexity и Brave добавляются в форме подключений выше. Сравнение не добавляет объекты в рабочий реестр.</p></form>
     <div id="benchmark-result" aria-live="polite"></div>
   </details>`;
+  if(tg.login)showTelegramCode(tg.login);
   if(last) await watchBenchmark(last.id);
 }
 function renderBenchmark(run) {
@@ -66,7 +96,10 @@ document.addEventListener('click',async event=>{
   const button=event.target.closest('[data-op]');if(!button)return;
   button.disabled=true;
   try {
-    if(button.dataset.op==='tg-disconnect'){await api('/telegram/session',{method:'DELETE'});$('#tg-status').textContent='Локальная сессия удалена. Можно запросить новый код.';}
+    if(button.dataset.op==='tg-disconnect'){await api('/telegram/session',{method:'DELETE'});clearTimeout(telegramQRTimer);showTelegramQR({status:'idle',message:'Локальная сессия удалена. Можно войти снова.'});$('#tg-status').textContent='';}
+    if(button.dataset.op==='tg-qr-start'){showTelegramQR(await api('/telegram/qr',{method:'POST'}));await watchTelegramQR();}
+    if(button.dataset.op==='tg-qr-cancel'){clearTimeout(telegramQRTimer);showTelegramQR(await api('/telegram/qr',{method:'DELETE'}));}
+    if(button.dataset.op==='tg-resend'){showTelegramCode(await api('/telegram/resend',{method:'POST'}));}
     if(button.dataset.op==='sync-chat'){
       button.textContent='Читаю…';
       const result=await api('/records/'+state.selected.id+'/telegram/sync',{method:'POST',body:JSON.stringify({url:button.dataset.url})});
@@ -74,7 +107,7 @@ document.addEventListener('click',async event=>{
     }
     if(button.dataset.op==='analyze-chat'){button.textContent='Разбираю…';const r=await api('/records/'+state.selected.id+'/chats/analyze',{method:'POST'});await openRecord(state.selected.id);toast('Размечено сообщений: '+r.labelled+(r.more?'. Остались сообщения, повторите разбор.':''));}
     if(button.dataset.op==='remove-chat'){await api('/records/'+state.selected.id+'/telegram',{method:'DELETE',body:JSON.stringify({url:button.dataset.url})});await loadTelegramLinks(state.selected.id);}
-  }catch(error){toast(error.message);if(button.dataset.op==='sync-chat')button.textContent='Прочитать';if(button.dataset.op==='analyze-chat')button.textContent='Разобрать сообщения моделью';}
+  }catch(error){toast(error.message);if(button.dataset.op.startsWith('tg-qr'))$('#tg-qr-result').textContent=error.message;else if(button.dataset.op.startsWith('tg-'))$('#tg-status').textContent=error.message;if(button.dataset.op==='sync-chat')button.textContent='Прочитать';if(button.dataset.op==='analyze-chat')button.textContent='Разобрать сообщения моделью';}
   finally{button.disabled=false;}
 });
 document.addEventListener('submit',async event=>{
@@ -83,7 +116,8 @@ document.addEventListener('submit',async event=>{
   try{
     const id=event.target.id;
     if(id==='ops-chat-link'){await api('/records/'+state.selected.id+'/telegram',{method:'POST',body:JSON.stringify({url:form.get('url')})});await loadTelegramLinks(state.selected.id);toast('Ссылка добавлена. Нажмите «Прочитать» после входа в Telegram.');}
-    if(id==='ops-tg-login'){await api('/telegram/login',{method:'POST',body:JSON.stringify({phone:form.get('phone').trim()})});$('#tg-status').textContent='Код запрошен. Введите его ниже.';event.target.reset();}
+    if(id==='ops-tg-login'){$('#tg-status').textContent='Запрашиваем код у Telegram…';showTelegramCode(await api('/telegram/login',{method:'POST',body:JSON.stringify({phone:form.get('phone').trim()})}));event.target.reset();}
+    if(id==='ops-tg-qr-password'){try{showTelegramQR(await api('/telegram/qr/password',{method:'POST',body:JSON.stringify({password:form.get('password')})}));clearTimeout(telegramQRTimer);}finally{event.target.reset();}}
     if(id==='ops-tg-confirm'){const r=await api('/telegram/confirm',{method:'POST',body:JSON.stringify(Object.fromEntries(form))});$('#tg-status').textContent=r.status==='password_needed'?'Нужен пароль двухэтапной проверки.':'Вход выполнен. Теперь можно читать добавленные открытые чаты.';event.target.reset();}
     if(id==='ops-weekly'){
       const data={enabled:form.has('enabled'),delivery:form.has('delivery'),sync_chats:form.has('sync_chats'),sync_registry:form.has('sync_registry'),sync_sheets:form.has('sync_sheets'),screen_chats:form.has('screen_chats'),screen_model_calls:Number(form.get('screen_model_calls')),region:form.get('region')};
@@ -95,7 +129,7 @@ document.addEventListener('submit',async event=>{
       const r=await api('/benchmark',{method:'POST',body:JSON.stringify({mode:event.submitter?.value||'live',queries:form.get('queries').split('\n').map(s=>s.trim()).filter(Boolean),providers:form.getAll('provider'),model_roles:form.has('models')?['benchmark_a','benchmark_b']:[]})});
       await watchBenchmark(r.id);
     }
-  }catch(error){toast(error.message);if(event.target.id.startsWith('ops-tg-'))$('#tg-status').textContent=error.message;}
+  }catch(error){toast(error.message);if(event.target.id==='ops-tg-qr-password'){$('#tg-qr-result').textContent=error.message;}else if(event.target.id.startsWith('ops-tg-'))$('#tg-status').textContent=error.message;}
   finally{buttons.forEach(b=>b.disabled=false);}
 });
 document.addEventListener('change',async event=>{

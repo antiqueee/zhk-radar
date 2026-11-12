@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import re
 import threading
 import time
@@ -10,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
+from telethon.tl.functions.auth import ResendCodeRequest
 from telethon.tl.types import Channel
 
 from radar.web.chats import ChatImport, ingest_chat
@@ -20,6 +22,11 @@ from radar.web.store import now
 class TelegramLogin(BaseModel):
     model_config = ConfigDict(extra="forbid")
     phone: str = Field(pattern=r"^\+[1-9][0-9]{7,14}$")
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def normalize_phone(cls, value):
+        return re.sub(r"[\s()-]", "", value) if isinstance(value, str) else value
 
 
 class TelegramCode(BaseModel):
@@ -46,7 +53,7 @@ def factory(cfg, session):
         StringSession(session),
         int(cfg["TG_API_ID"]),
         cfg["TG_API_HASH"],
-        receive_updates=False,
+        receive_updates=bool(cfg.get("_receive_updates", False)),
         request_retries=0,
         connection_retries=1,
         flood_sleep_threshold=0,
@@ -59,6 +66,7 @@ class TelegramReader:
         self.store, self.salt, self.factory = store, salt, client_factory
         self.lock = threading.Lock()
         self.pending = None
+        self.qr = None
         with store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS telegram_links(
                 record_id TEXT NOT NULL, url TEXT NOT NULL, peer_id TEXT, title TEXT,
@@ -67,15 +75,22 @@ class TelegramReader:
 
     def status(self):
         cfg = configuration(self.store.root)
+        pending = self.pending
+        active = bool(pending and pending["expires"] > time.time())
         return {
             "configured": bool(cfg.get("TG_API_ID") and cfg.get("TG_API_HASH")),
             "session_saved": bool(cfg.get("TG_SESSION")),
-            "pending_code": bool(self.pending and self.pending["expires"] > time.time()),
+            "pending_code": active,
+            "login": self.login_status(pending) if active else None,
             "verified": False,
         }
 
     def invoke(self, action, session=None):
         with self.lock:
+            if self.qr and self.qr.active:
+                raise ValueError(
+                    "Завершите вход по QR-коду или отмените его перед входом по номеру."
+                )
             cfg = configuration(self.store.root)
             if not cfg.get("TG_API_ID", "").isdigit() or not cfg.get("TG_API_HASH"):
                 raise ValueError("Сначала сохраните API ID и API Hash Telegram")
@@ -100,25 +115,122 @@ class TelegramReader:
                 ) from None
             except errors.PasswordHashInvalidError:
                 raise ValueError("Неверный пароль двухэтапной проверки") from None
-            except (errors.RPCError, OSError, TimeoutError):
+            except errors.ApiIdInvalidError:
                 raise ValueError(
-                    "Telegram недоступен или отказал в доступе. Проверьте подключение"
+                    "Telegram отклонил API ID / API Hash. Проверьте пару ключей."
                 ) from None
+            except errors.PhoneNumberInvalidError:
+                raise ValueError(
+                    "Telegram не принял номер. Укажите его с кодом страны: +7…"
+                ) from None
+            except errors.PhoneNumberBannedError:
+                raise ValueError("Telegram сообщает, что этот номер заблокирован.") from None
+            except errors.RPCError as exc:
+                # Only the exception class is exposed; never the request or its arguments.
+                raise ValueError(f"Telegram отклонил запрос: {type(exc).__name__}") from None
+            except (OSError, TimeoutError):
+                raise ValueError(
+                    "Не удалось связаться с Telegram. Проверьте интернет и доступ к Telegram."
+                ) from None
+
+    @staticmethod
+    def login_status(pending):
+        delivery = pending.get("delivery", "unknown")
+        messages = {
+            "SentCodeTypeApp": (
+                "Откройте служебный чат «Telegram» на устройстве, где уже "
+                "выполнен вход. Telegram выбрал доставку кода в приложение, не SMS."
+            ),
+            "SentCodeTypeSms": "Telegram выбрал SMS. Проверьте сообщения на телефоне.",
+            "SentCodeTypeCall": "Telegram выбрал телефонный звонок с кодом.",
+            "SentCodeTypeFlashCall": (
+                "Telegram выбрал звонок: код определяется по номеру звонящего."
+            ),
+            "SentCodeTypeMissedCall": (
+                "Telegram выбрал пропущенный звонок: код — последние цифры номера звонящего."
+            ),
+            "SentCodeTypeEmailCode": (
+                "Telegram выбрал доставку кода на почту, привязанную к входу в Telegram."
+            ),
+        }
+        delay = max(0, math.ceil(pending.get("resend_at", 0) - time.time()))
+        return {
+            "status": "code_sent",
+            "delivery": delivery,
+            "message": messages.get(
+                delivery,
+                (
+                    "Telegram ответил на запрос. Проверьте служебный чат "
+                    "«Telegram». Способ доставки не распознан приложением."
+                ),
+            ),
+            "expires_in": max(0, math.ceil(pending["expires"] - time.time())),
+            "resend_available": bool(pending.get("next_type")),
+            "resend_in": delay,
+            "password_needed": pending.get("password_needed", False),
+        }
+
+    def remember_code(self, client, phone, result):
+        delivery = type(getattr(result, "type", None)).__name__
+        if not getattr(result, "phone_code_hash", None):
+            raise ValueError(
+                "Telegram не выдал запрос кода для входа. Обновите "
+                "официальный Telegram и повторите вход."
+            )
+        if delivery in {
+            "SentCodeTypeSetUpEmailRequired",
+            "SentCodeTypeFirebaseSms",
+            "SentCodeTypeSmsWord",
+            "SentCodeTypeSmsPhrase",
+        }:
+            raise ValueError(
+                "Telegram запросил способ входа, который здесь пока не "
+                "поддерживается. Выполните вход в официальном приложении Telegram."
+            )
+        self.pending = {
+            "phone": phone,
+            "hash": result.phone_code_hash,
+            "session": client.session.save(),
+            "expires": time.time() + 300,
+            "delivery": delivery,
+            "next_type": type(result.next_type).__name__
+            if getattr(result, "next_type", None)
+            else None,
+            "resend_at": time.time() + max(0, getattr(result, "timeout", None) or 0),
+        }
+        return self.login_status(self.pending)
 
     def login(self, phone):
         async def action(client):
             if self.pending and self.pending["expires"] > time.time():
                 raise ValueError("Код уже запрошен. Введите его или отмените вход")
             result = await client.send_code_request(phone)
-            self.pending = {
-                "phone": phone,
-                "hash": result.phone_code_hash,
-                "session": client.session.save(),
-                "expires": time.time() + 300,
-            }
-            return {"status": "code_sent", "expires_in": 300}
+            return self.remember_code(client, phone, result)
 
         return self.invoke(action, "")
+
+    def resend(self):
+        pending = self.pending
+        if not pending or pending["expires"] <= time.time():
+            raise ValueError("Запрос входа истёк. Запросите новый код.")
+
+        async def action(client):
+            if self.pending is not pending or pending["expires"] <= time.time():
+                raise ValueError("Запрос входа уже завершён или отменён")
+            status = self.login_status(pending)
+            if pending.get("password_needed"):
+                raise ValueError("Код уже принят. Введите пароль двухэтапной проверки.")
+            if not status["resend_available"]:
+                raise ValueError(
+                    "Telegram не предложил другой способ доставки. Проверьте "
+                    "служебный чат «Telegram»."
+                )
+            if status["resend_in"]:
+                raise ValueError(f"Повторная отправка доступна через {status['resend_in']} сек.")
+            result = await client(ResendCodeRequest(pending["phone"], pending["hash"]))
+            return self.remember_code(client, pending["phone"], result)
+
+        return self.invoke(action, pending["session"])
 
     def confirm(self, data):
         pending = self.pending
@@ -138,6 +250,7 @@ class TelegramReader:
                     )
             except errors.SessionPasswordNeededError:
                 self.pending["session"] = client.session.save()
+                self.pending["password_needed"] = True
                 return {"status": "password_needed"}
             if not await client.is_user_authorized():
                 raise ValueError("Авторизация не завершена")

@@ -47,6 +47,7 @@ from radar.web.operations import OperationsSettings, WeeklyScheduler
 from radar.web.pdf import render_pdf
 from radar.web.store import STATUSES, Store, now
 from radar.web.telegram import TelegramCode, TelegramLink, TelegramLogin, TelegramReader
+from radar.web.telegram_qr import QRPassword, TelegramQR
 
 
 class Decision(BaseModel):
@@ -89,6 +90,7 @@ def create_app(root: Path | None = None):
         tasks.start()
         daily.start()
         yield
+        await telegram.qr.cancel()
         workers = [daily, tasks, maintenance, scheduler, benchmark]
         for worker in [*workers, jobs]:
             if hasattr(worker, "stop"):
@@ -117,6 +119,8 @@ def create_app(root: Path | None = None):
                 "/api/settings",
                 "/api/operations",
                 "/api/telegram/login",
+                "/api/telegram/resend",
+                "/api/telegram/qr",
                 "/api/telegram/confirm",
                 "/api/telegram/session",
                 "/api/benchmark/models",
@@ -353,6 +357,7 @@ def create_app(root: Path | None = None):
         return ingest_chat(store, batch, author_salt())
 
     telegram = TelegramReader(store, author_salt)
+    telegram.qr = TelegramQR(telegram)
     app.state.telegram = telegram
     jobs.telegram = telegram
     tasks = advanced.install(app, store)
@@ -379,16 +384,37 @@ def create_app(root: Path | None = None):
     def telegram_status():
         return telegram.status()
 
+    @app.post("/api/telegram/qr")
+    async def telegram_qr_start():
+        return await telegram.qr.start()
+
+    @app.get("/api/telegram/qr")
+    async def telegram_qr_status():
+        return telegram.qr.status()
+
+    @app.post("/api/telegram/qr/password")
+    async def telegram_qr_password(data: QRPassword):
+        return await telegram.qr.confirm(data.password)
+
+    @app.delete("/api/telegram/qr")
+    async def telegram_qr_cancel():
+        return await telegram.qr.cancel()
+
     @app.post("/api/telegram/login")
     def telegram_login(data: TelegramLogin):
         return telegram.login(data.phone)
+
+    @app.post("/api/telegram/resend")
+    def telegram_resend():
+        return telegram.resend()
 
     @app.post("/api/telegram/confirm")
     def telegram_confirm(data: TelegramCode):
         return telegram.confirm(data)
 
     @app.delete("/api/telegram/session")
-    def telegram_disconnect():
+    async def telegram_disconnect():
+        await telegram.qr.cancel()
         return telegram.disconnect()
 
     @app.get("/api/records/{ident}/telegram")

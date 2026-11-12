@@ -14,6 +14,7 @@ with sync_playwright() as p:
     page.goto("http://127.0.0.1:8765")
     page.get_by_role("button", name="Подключения", exact=False).click()
     page.get_by_text("Вход в Telegram", exact=True).click()
+    page.get_by_text("Войти по номеру телефона", exact=True).click()
     phone = page.locator("#ops-tg-login input")
     phone.fill("+79991234567")
     assert phone.evaluate("e=>e.checkValidity()")

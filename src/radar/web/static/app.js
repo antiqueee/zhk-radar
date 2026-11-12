@@ -94,6 +94,7 @@ async function openSettings() {
   await loadOperations();
   await loadCompletionSettings();
   if (!$('#connections').open) $('#connections').showModal();
+  await watchTelegramQR();
 }
 async function saveDecision() {
   const form=new FormData($('#decision-form'));const r=state.selected;

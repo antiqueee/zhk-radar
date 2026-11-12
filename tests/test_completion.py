@@ -79,6 +79,9 @@ def test_auth_fail_closed_roles_origin_and_revocation(store):
     assert c.get("/api/search/readiness").status_code == 200
     assert c.post("/api/records/demo-1/brief").status_code == 200
     assert c.post("/api/sheets/sync").status_code == 403
+    assert c.get("/api/telegram/qr").status_code == 403
+    assert c.post("/api/telegram/qr").status_code == 403
+    assert c.post("/api/telegram/resend").status_code == 403
     token = c.cookies.get(COOKIE)
     set_user(store.root, "analyst", "new-long-password-456", "viewer")
     assert Auth(store).session(token) is None
