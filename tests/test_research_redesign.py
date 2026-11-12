@@ -171,3 +171,12 @@ def test_project_title_binds_literal_quote_without_invented_name():
             record,
             [doc],
         )
+
+
+def test_quarters_are_not_apartment_contacts():
+    from radar.web.chats import redact
+
+    for value in ["II кв. 2026", "IV кв 2027", "2 кв. 2026", "III кв. 2025 года"]:
+        assert redact(value, []) == value
+    for value in ["кв. 99", "квартира 2026", "II кв. №2026", "кв. 2026"]:
+        assert "[квартира]" in redact(value, [])

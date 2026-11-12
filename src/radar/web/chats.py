@@ -37,9 +37,15 @@ def redact(text: str, names: list[str]) -> str:
     text = re.sub(
         r"(?<!\w)(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}\b", "[телефон]", text
     )
-    return re.sub(
-        r"\b(?:кв\.?|квартира|квартиры)\s*№?\s*\d+[а-яa-z]?", "[квартира]", text, flags=re.I
-    )
+
+    def apartment(match):
+        # «II кв. 2026» describes a calendar quarter, not apartment 2026.
+        quarter = re.search(r"\b(?:I{1,3}|IV|[1-4])\s+$", text[: match.start()], re.I)
+        if quarter and re.fullmatch(r"кв\.?\s+(?:19|20|21)\d{2}", match[0], re.I):
+            return match[0]
+        return "[квартира]"
+
+    return re.sub(r"\b(?:кв\.?|квартира|квартиры)\s*№?\s*\d+[а-яa-z]?", apartment, text, flags=re.I)
 
 
 def initialize(store):
