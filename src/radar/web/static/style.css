@@ -12,3 +12,13 @@
 #developer-overview{margin:0 0 24px;padding:18px 22px;background:#fff;border:1px solid #e1e6e8;border-radius:12px}.research-table{width:100%;border-collapse:collapse;text-align:left;font-size:13px}.research-table th,.research-table td{padding:12px 10px;border-bottom:1px solid #e8edef}.table-scroll{overflow:auto}.finding{padding:14px 0;border-bottom:1px solid #e5eaec}.finding p{margin:7px 0}.finding a{font-size:13px}.simple-chats,#analyst-tools{margin-top:20px}.simple-chats>.chat-box{margin-top:14px}#research-overview h4{margin:22px 0 10px}.record .signal{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 
 .search-controls label{min-width:0}.search-controls input{display:block;width:100%;margin-top:9px;height:47px}.search-controls label.period{flex:0 0 190px}@media(max-width:800px){.search-controls label.period{flex:1}}@media(max-width:480px){.search-controls label.period{flex-basis:100%}}
+
+/* Object dialogue stays in the primary flow, with a bounded history pane. */
+#conversation-history{max-height:520px;overflow:auto;margin:16px 0}
+.conversation-turn{border-bottom:1px solid #e6e8e9;padding:12px 0}
+.conversation-question{background:#eef2f3;padding:12px 16px;border-radius:12px;white-space:pre-wrap}
+.conversation-answer{padding:12px 4px}.conversation-answer p{white-space:pre-wrap;line-height:1.65}
+.conversation-answer .tag{margin-left:10px}.conversation-links{display:flex;gap:12px;flex-wrap:wrap;font-size:12px}
+#conversation-form textarea{width:100%;box-sizing:border-box}#conversation-form button{margin-top:14px}
+
+#object-conversation{margin-top:28px;padding-top:20px;border-top:1px solid #e6e8e9}

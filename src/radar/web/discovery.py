@@ -40,6 +40,7 @@ class SearchRequest(BaseModel):
     region: str = Field(pattern="^(capitals|moscow|petersburg|russia)$")
     period: str = Field(default="month", pattern="^(month|fortnight)$")
     enrich: bool = False
+    expansion: int = Field(default=0, ge=0, le=2)
     target: str = Field(default="", max_length=150)
 
 
@@ -242,6 +243,22 @@ def query_plan(root, request):
     cfg = DiscoverySettings.model_validate(
         yaml.safe_load((root / "config/discovery.yaml").read_text())
     ).model_dump()
+    if request.expansion:
+        suffixes = {
+            1: [
+                "ЖК форум дольщиков перенос ключей коллективное обращение",
+                "жилой комплекс жители жалобы приемка протечки управляющая компания",
+            ],
+            2: [
+                "site:наш.дом.рф жилой комплекс изменение срока передачи",
+                "site:erzrf.ru жилой комплекс перенос сроков",
+                "жилой комплекс прокуратура проверка обращение жителей",
+            ],
+        }[request.expansion]
+        scope = (
+            [request.target.strip()] if request.target.strip() else cfg["regions"][request.region]
+        )
+        return cfg, [f"{region} {suffix}" for region in scope for suffix in suffixes]
     if request.target.strip():
         target = request.target.strip().replace('"', " ")
         return cfg, [
@@ -344,12 +361,15 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
             from radar.web.prospecting import seeds
 
             report("registry", 2, "Изучаем портфели девелоперов и исходный список агентства")
-            if not request.target.strip():
+            if not request.target.strip() and not request.expansion:
                 prospecting = seeds(store, limits["regions"][request.region])
             errors.extend(prospecting["errors"])
             # Registry/project queries are timeless: a delayed project may have no recent news.
             planned = [(q, "all") for q in prospecting["queries"]]
-            planned += [(q, "all" if request.target.strip() else request.period) for q in queries]
+            planned += [
+                (q, "all" if request.target.strip() or request.expansion else request.period)
+                for q in queries
+            ]
             successful_queries = 0
             query_results = []
             for i, (query, period) in enumerate(planned):

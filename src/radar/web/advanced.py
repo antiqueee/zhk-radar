@@ -13,6 +13,7 @@ from radar.web import (
     cases,
     chat_workflow,
     client_pdf,
+    conversation,
     evaluation,
     external_ops,
     extra_sources,
@@ -33,9 +34,17 @@ class ChatDecision(BaseModel):
 
 
 def install(app, store):
+    conversation.initialize(store)
+    # A process restart cannot leave a submitted question waiting forever.
+    with store.connect() as db:
+        db.execute(
+            "UPDATE object_conversations SET status='failed', "
+            "error='Приложение перезапущено. Повторите вопрос.' WHERE status='pending'"
+        )
     tasks = TaskRunner(
         store,
         {
+            "conversation": lambda ident, run: conversation.answer(store, ident, run),
             "extra_sources": lambda ident, run: extra_sources.collect(store, ident, run),
             "research": lambda ident, run: workflow.research(store, ident, run),
             "author": lambda ident, run: author.generate(store, ident, run),
@@ -43,6 +52,14 @@ def install(app, store):
         },
     )
     app.state.tasks = tasks
+
+    @app.get("/api/records/{ident}/conversation")
+    def conversation_history(ident: str):
+        return conversation.history(store, ident)
+
+    @app.post("/api/records/{ident}/conversation", status_code=202)
+    def conversation_question(ident: str, data: conversation.Question):
+        return conversation.submit(store, tasks, ident, data)
 
     @app.post("/api/records/{ident}/tasks", status_code=202)
     def start(ident: str, data: TaskRequest):

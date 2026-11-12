@@ -12,7 +12,7 @@ async function api(path, options={}) {
 }
 function toast(text) {$('#toast').textContent=text;$('#toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').style.display='none',5500);}
 function safeURL(value) {try {const u=new URL(value);return ['https:','http:'].includes(u.protocol)?esc(u.href):'#';}catch{return '#';}}
-function host(value) {try{return new URL(value).hostname;}catch{return 'Источник';}}
+function host(value) {try{return new URL(value).hostname;}catch{return 'Материал';}}
 function dateText(value) {return new Date(value).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Moscow'});}
 function filtered() {const q=state.filter.toLocaleLowerCase('ru');return state.records.filter(r=>(!state.runIds||state.runIds.includes(r.id))&&(!r.blocked||$('#show-blocked').checked)&&`${r.name} ${r.developer} ${r.region} ${r.summary}`.toLocaleLowerCase('ru').includes(q));}
 function renderRecords() {
@@ -43,6 +43,12 @@ function renderJob(job) {
   if (!job) return;
   const running=!terminalJobs.has(job.status);
   $('#find-button').disabled=running;
+  $('#expand-search')?.remove();
+  if(!running && job.mode==='live' && job.result && (job.request?.expansion||0)<2){
+    const b=document.createElement('button');b.id='expand-search';b.className='button quiet';b.textContent='Расширить поиск · '+((job.request?.expansion||0)===0?'форумы и обращения':'реестры и проверки');
+    b.onclick=()=>{b.disabled=true;startScan('live',{...job.request,mode:'live',enrich:true,expansion:(job.request?.expansion||0)+1}).catch(err=>{toast(err.message);b.disabled=false;});};
+    $('.results-actions').prepend(b);
+  }
   const demo=job.mode==='demo'?'Учебный прогон · без сети и расходов. ':'';
   let message=demo+job.detail;
   if (job.cancel_requested && running) message=demo+'Останавливаем после текущего запроса…';
@@ -81,6 +87,7 @@ async function openRecord(id) {
   await loadCompletion(id);
   await compactCard(id);
   if (!$('#detail').open) $('#detail').showModal();
+  await loadObjectConversation(id);
 }
 const connectionFields=[
  {title:'Поиск в интернете',hint:'Yandex находит публикации по ЖК и девелоперам.',keys:[['YANDEX_SEARCH_API_KEY','API-ключ Yandex','password'],['YANDEX_FOLDER_ID','Идентификатор каталога (Folder ID)','text']]},
@@ -225,7 +232,12 @@ async function compactCard(id){
     const seenSources=new Set();const signals=(state.selected.dossier?.signals||[]).filter(s=>{if(seenSources.has(s.source_url))return false;seenSources.add(s.source_url);return true;});
     const answers=value.research?.answers||[];
     const chat=value.screening;
-    el.innerHTML=`<h3>Основания и позиция компании</h3>${signals.slice(0,4).map(s=>`<article class="finding"><span class="caption">${esc(s.event_date||s.published_at||'Дата не установлена')} · ${esc(s.kind_label)}</span><p>«${esc((s.quote||s.summary).slice(0,420))}»</p><a href="${safeURL(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(host(s.source_url))} ↗</a></article>`).join('')||'<p class="muted">Открытые источники ещё не подтверждены.</p>'}<h4>Что говорит застройщик</h4>${answers.filter(a=>a.question==='developer_response').map(a=>`<p>«${esc(a.quote)}» <a href="${safeURL(a.url)}" target="_blank" rel="noopener noreferrer">Источник ↗</a></p>`).join('')||'<p class="muted">Прямой ответ по выявленной проблеме в собранных материалах не найден.</p>'}<p class="caption">${chat?.chats.length?`Telegram API: прочитано ${chat.chats.reduce((n,c)=>n+c.read,0)} сообщений за 30 дней. Размечено ${chat.labelled}.`:'Чаты не прочитаны — выводов о настроениях участников нет.'}</p>`;
+    el.innerHTML=`<h3>Основания и позиция компании</h3>${signals.slice(0,4).map(s=>`<article class="finding"><span class="caption">${esc(s.event_date||s.published_at||host(s.source_url))} · ${esc(s.kind_label)}</span><p>«${esc((s.quote||s.summary).slice(0,420))}»</p><a href="${safeURL(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(host(s.source_url))} ↗</a></article>`).join('')||'<p class="muted">Открытые источники ещё не подтверждены.</p>'}<h4>Что говорит застройщик</h4>${answers.filter(a=>a.question==='developer_response').map(a=>`<p>«${esc(a.quote)}» <a href="${safeURL(a.url)}" target="_blank" rel="noopener noreferrer">Источник ↗</a></p>`).join('')||'<p class="muted">Прямой ответ по выявленной проблеме в собранных материалах не найден.</p>'}<p class="caption">${chat?.chats.length?`Telegram API: прочитано ${chat.chats.reduce((n,c)=>n+c.read,0)} сообщений за 30 дней. Размечено ${chat.labelled}.`:'Чаты не прочитаны — выводов о настроениях участников нет.'}</p>`;
+    const chronology=answers.filter(a=>['deadlines','chronology'].includes(a.question));
+    const causes=answers.filter(a=>a.question==='causes');
+    const block=(title,items)=>`<h4>${title}</h4>${items.map(a=>`<article class="finding"><p>«${esc(a.quote)}»</p><a href="${safeURL(a.url)}" target="_blank" rel="noopener noreferrer">${esc(host(a.url))} ↗</a></article>`).join('')}`;
+    if(chronology.length)el.insertAdjacentHTML('beforeend',block('Как менялись сроки и события',chronology));
+    el.insertAdjacentHTML('beforeend',causes.length?block('Что источники сообщают о причинах',causes):'<p class="caption">Причина задержки в собранных материалах прямо не объяснена.</p>');
     target.querySelector('.pdf-action').before(el);
   }
 }

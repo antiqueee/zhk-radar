@@ -26,6 +26,14 @@ def excerpt(value, limit):
     return value[:limit].rsplit(" ", 1)[0].rstrip(".,:;") + "…"
 
 
+def source_host(url):
+    host = urlsplit(url).hostname or "Материал"
+    try:
+        return host.encode("ascii").decode("idna")
+    except (UnicodeError, ValueError):
+        return host
+
+
 def render(brief):
     base = Path(__file__).parent
     if "Radar" not in pdfmetrics.getRegisteredFontNames():
@@ -50,6 +58,7 @@ def render(brief):
         )
     )
     references = {url: i + 1 for i, url in enumerate(urls)}
+    used_urls = []
     products = (brief.get("report") or {}).get("products", brief.get("offers", []))[:3]
 
     def readable(value):
@@ -68,7 +77,18 @@ def render(brief):
         return p(text, 11, NAVY, 5)
 
     def body(text, size=9.5, color=INK, space=7):
-        return p(readable(text), size, color, space)
+        paragraph = p(readable(text), size, color, space)
+        # Every numbered citation is clickable, including sources beyond the short index.
+        html = escape(readable(text))
+        for url, number in references.items():
+            if f"[{number}]" in text and urlsplit(url).scheme in {"http", "https"}:
+                if url not in used_urls:
+                    used_urls.append(url)
+                href = escape(url, {chr(34): "&quot;"})
+                html = html.replace(
+                    f"[{number}]", f'<link href="{href}" color="#183c50">[{number}]</link>'
+                )
+        return Paragraph(html, paragraph.style)
 
     def frame(page, label, story):
         canvas.setFillColor(NAVY)
@@ -107,6 +127,17 @@ def render(brief):
         canvas.drawRightString(width - 44, 27, f"{page} / 2")
         canvas.showPage()
 
+    analysis = brief.get("analysis") or {}
+
+    def grounded(block):
+        return (
+            block["text"]
+            + " "
+            + " ".join(
+                f"[{references[url]}]" for url in block.get("source_urls", []) if url in references
+            )
+        )
+
     page = [
         p(excerpt(brief["name"], 110), 21, NAVY, 6),
         body(
@@ -118,26 +149,56 @@ def render(brief):
             13,
         ),
         heading("01  Что происходит"),
-        body(excerpt(brief.get("summary", "Нет подтверждённых сведений"), 700)),
+        body(
+            grounded(analysis["overview"])
+            if analysis.get("overview")
+            else excerpt(brief.get("summary", "Нет подтверждённых сведений"), 360)
+        ),
     ]
-    page.append(heading("На чём основан вывод"))
-    if signals:
-        for signal in signals[:4]:
-            stamp = signal.get("event_date") or signal.get("published_at") or "дата не установлена"
+    chronology = [a for a in answers if a["question"] in {"chronology", "deadlines"}]
+    page.append(
+        heading(
+            "Сроки и изменения: сопоставление источников"
+            if chronology
+            else "Подтверждённые сигналы"
+        )
+    )
+    if analysis.get("chronology"):
+        for block in analysis["chronology"]:
+            page.append(body(grounded(block), 9))
+    elif chronology:
+        for item in chronology[:3]:
+            number = references[item["url"]]
+            page.append(body(f"[{number}] «{excerpt(item['quote'], 300)}»", 9))
+    elif signals:
+        for signal in signals[:3]:
+            stamp = signal.get("event_date") or signal.get("published_at")
             number = references.get(signal["source_url"], "")
+            label = " · ".join(filter(None, [stamp, source_host(signal["source_url"])]))
+            page.append(body(f"[{number}] {label}", 8, MUTED, 2))
             page.append(
-                body(
-                    f"[{number}] {stamp} · {signal.get('kind_label', 'Сигнал источника')}",
-                    8,
-                    MUTED,
-                    2,
-                )
-            )
-            page.append(
-                body("«" + excerpt(signal.get("quote", signal["summary"]), 280) + "»", space=6)
+                body("«" + excerpt(signal.get("quote", signal["summary"]), 260) + "»", space=6)
             )
     else:
-        page.append(body("Прямые цитаты пока не собраны. Исходная карточка требует проверки."))
+        page.append(body("Прямые свидетельства пока не собраны."))
+    causes = [a for a in answers if a["question"] == "causes"]
+    page.append(heading("Почему возникла проблема"))
+    if analysis.get("causes"):
+        page.append(body(grounded(analysis["causes"]), 9))
+    elif causes:
+        for item in causes[:2]:
+            page.append(body(f"[{references[item['url']]}] «{excerpt(item['quote'], 280)}»", 9))
+        page.append(
+            body("Это объяснения источников; причинная связь отдельно не проверена.", 8, MUTED)
+        )
+    else:
+        page.append(
+            body(
+                "Публичное объяснение причины в собранных материалах не найдено. "
+                "Сам перенос не подтверждает нехватку денег или остановку работ.",
+                9,
+            )
+        )
     reg = brief.get("registry") or {}
     if reg.get("binding", {}).get("confirmed") if reg.get("binding") else False:
         snapshots = reg.get("snapshots", [])
@@ -160,28 +221,25 @@ def render(brief):
     topics = set(brief.get("topics", []))
     if signals:
         labels = (
-            ["Инженерная претензия", "Риск повторных жалоб", "Проверить порядок устранения"]
+            ["Неустранённые замечания", "Повторные обращения", "Риск потери доверия"]
             if topics & {"протечки", "качество_ук"}
             else [
                 "Сигналы о сроках и сервисе",
                 "Риск потери доверия",
-                "Проверить ответы покупателям",
+                "Риск эскалации обращений",
             ]
         )
         page += [heading("Рабочая гипотеза для проверки"), Route(labels), Spacer(1, 12)]
     official = [a for a in answers if a["question"] == "developer_response"]
     page += [
-        heading("Позиция компании и пробелы проверки"),
+        heading("Что говорит компания"),
         body(
             "[" + str(references[official[0]["url"]]) + "] " + excerpt(official[0]["quote"], 300)
             if official
             else "Прямая позиция застройщика по этой проблеме в материалах не найдена."
         ),
-        body(
-            excerpt(brief.get("check", "Уточнить актуальность и масштаб проблемы."), 220), 9, MUTED
-        ),
     ]
-    page.append(heading("Что добавили открытые чаты"))
+    page.append(heading("Что беспокоит покупателей"))
     if chats.get("messages_30d"):
         topics = "; ".join(
             t.replace("_", " ") + f": {n}"
@@ -200,14 +258,19 @@ def render(brief):
             label = f"[{references[example['url']]}] " if example.get("url") else ""
             page.append(body(label + "«" + excerpt(example["text"], 150) + "»", 8.5))
     else:
+        feedback = [a for a in answers if a["question"] == "resident_feedback"]
+        for item in feedback[:2]:
+            page.append(body(f"[{references[item['url']]}] «{excerpt(item['quote'], 200)}»", 9))
         page.append(
-            body("История чатов не прочитана. Выводов о настроениях участников нет.", color=MUTED)
+            body("История чатов не прочитана. Выводов о настроениях участников нет.", 8, MUTED)
         )
     page.append(heading("Источники"))
-    for url in urls[:6]:
+    for url in list(used_urls)[:6]:
         if urlsplit(url).scheme not in {"http", "https"}:
             continue
-        label = f"[{references[url]}] {urlsplit(url).hostname} · открыть материал"
+        snippet_urls = {a["url"] for a in answers if a.get("kind") == "snippet"}
+        label = f"[{references[url]}] {source_host(url)}"
+        label += " · фрагмент поиска" if url in snippet_urls else " · открыть материал"
         paragraph = body(label, 8, MUTED, 3)
         page.append(
             Paragraph(
@@ -225,7 +288,7 @@ def render(brief):
         )
     page.append(
         body(
-            "Перенос ввода и задержка ключей — разные события. Масштаб и спрос не установлены.",
+            "Перенос ввода и задержка ключей — разные события. Жалобы отражают опыт их авторов.",
             8,
             MUTED,
         )
@@ -244,7 +307,7 @@ def render(brief):
         else:
             page.append(
                 body(
-                    "Основание для проверки: «"
+                    "Почему это уместно: «"
                     + excerpt(product.get("case_trigger", brief.get("summary")), 170)
                     + "»."
                 )
@@ -283,16 +346,17 @@ def render(brief):
         Spacer(1, 4),
         Route(
             [
-                "Проверка фактов\nСроки и обращения",
-                "Пилот на 30 дней\nОтветы и эскалация",
+                "Диалог\nПриоритетные требования",
+                "Пилот на 30 дней\nИсполнение обещаний",
                 "Замер эффекта\nПовторные обращения",
             ]
         ),
         Spacer(1, 12),
         heading("Как начать разговор"),
         body(
-            "Предложить клиентскому сервису и PR проверку сигналов на одном ЖК. "
-            "Согласовать факты, ответственных и план работы. Расширение — после пилота.",
+            "Предложить руководителю проекта и клиентскому сервису пилот на одном ЖК: "
+            "наладить диалог по болезненным вопросам, публично показывать движение работ "
+            "и доводить договорённости до исполнения. Оценить результат по повторным обращениям.",
             9,
         ),
         body(

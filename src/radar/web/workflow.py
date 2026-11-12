@@ -17,7 +17,14 @@ from radar.web.configuration import configuration, model_config
 from radar.web.discovery import Findings, ScanCancelled, extract, yandex
 from radar.web.dossiers import dossier, normalized, persist_findings
 from radar.web.operations import BudgetExceeded, reserve_call
-from radar.web.sources import Page, canonical_url, fetch_page, load_page, primary_text
+from radar.web.sources import (
+    Page,
+    canonical_url,
+    fetch_page,
+    load_page,
+    primary_text,
+    research_excerpt,
+)
 from radar.web.store import now
 
 
@@ -253,7 +260,7 @@ def query_documents(store, query, run_id, client, reader=fetch_page, max_pages=4
             {
                 **row,
                 "url": url,
-                "text": primary_text(url, page.text)[:12000],
+                "text": research_excerpt(primary_text(url, page.text), 12000),
                 "source_id": page.id,
                 "source_kind": "page" if full else "snippet",
                 "published_at": page.published_at,
@@ -289,6 +296,8 @@ def research(
         scope + " отзывы дольщиков форум жалобы приемка недостатки",
         scope + " официальный сайт ход строительства ответ застройщика сроки",
         scope + " телеграм чат жителей соседей",
+        scope + " почему перенесли сроки причина задержки объяснение застройщика",
+        scope + " история переноса сроки первоначально уведомление дольщиков",
     ]
     owns = client is None
     client = client or httpx.Client(timeout=90)
@@ -320,7 +329,7 @@ def research(
             try:
                 response, _ = cached(
                     store,
-                    ["research-answers-v3", model, scope, documents],
+                    ["research-answers-v5", model, scope, documents],
                     lambda: extract_answers(client, cfg, model, record, documents).model_dump(),
                     run_id,
                     "model",

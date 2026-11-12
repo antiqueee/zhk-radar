@@ -72,10 +72,9 @@ def payload_for(store, ident):
             "Выводы отражают утверждения источников и требуют проверки. "
             "Охват чатов ограничен добавленными источниками. Совпадение цитаты"
             " с введённым текстом "
-            "не подтверждает подлинность документа. Начальное предложение — диагностика."
+            "не подтверждает подлинность документа. Предложения — гипотезы для обсуждения."
         ),
     )
-    payload["report"] = build_report(payload, library)
     from radar.web.workflow import initialize
 
     initialize(store)
@@ -85,6 +84,7 @@ def payload_for(store, ident):
             (ident,),
         ).fetchone()
     payload["followup"] = json.loads(followup[0]) if followup else None
+    payload["report"] = build_report(payload, library)
     return payload
 
 

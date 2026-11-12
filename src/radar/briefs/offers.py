@@ -21,6 +21,7 @@ class Offer(StrictModel):
     buyer_roles: list[str]
     not_when: list[str]
     source_pages: list[int]
+    practice_sources: list[str] = Field(default_factory=list)
     approved: bool = False
     supplementary_only: bool = False
 
@@ -82,15 +83,11 @@ def select_offers(
         ),
     )
     diagnosis = next((o for o in candidates if o.code == "O1"), None)
-    if not chats_connected or low_confidence:
-        if diagnosis is None:
-            return []
-        selected = [diagnosis]
-    else:
-        relevant = [
-            o for o in ranked if not o.supplementary_only and set(o.pain_topics) & weights.keys()
-        ]
-        selected = relevant[:1] or ([diagnosis] if diagnosis else [])
+    # Missing chat coverage limits evidence; it is not a reason to sell an audit.
+    relevant = [
+        o for o in ranked if not o.supplementary_only and set(o.pain_topics) & weights.keys()
+    ]
+    selected = relevant[:1] or ([diagnosis] if diagnosis else [])
     if not selected:
         return []
     covered = set(selected[0].pain_topics)

@@ -8,26 +8,32 @@ from pathlib import Path
 PLAYBOOKS = json.loads(Path(__file__).with_name("playbooks.json").read_text())
 
 
+TOPIC_HINTS = {
+    "перенос_сроков": r"перенос|срыв.{0,15}срок|задержк.{0,15}(сдач|передач)",
+    "выдача_ключей": r"выдач.{0,10}ключ|передач.{0,12}квартир",
+    "протечки": r"протеч|затоплен",
+    "качество_ук": r"управляющ.{0,10}компан|\bУК\b",
+    "суд": r"\bсуд\b|судебн",
+    "неустойка": r"неустойк",
+    "разные_ответы": r"разн.{0,10}ответ|противоречив.{0,10}информац",
+    "инициативная_группа": r"инициативн.{0,10}групп",
+    "жалобы_в_органы": r"прокуратур|жалоб.{0,15}(орган|надзор)",
+    "смена_собственника": r"смен.{0,5}собственник",
+}
+
+
+def text_topics(text):
+    return {topic for topic, pattern in TOPIC_HINTS.items() if re.search(pattern, text, re.I)}
+
+
 def build_report(brief, library):
     """Keep supplied facts distinct from proposed work and conditional products."""
     topics = set(brief.get("topics", []))
-    hints = {
-        "перенос_сроков": r"перенос|срыв.{0,15}срок|задержк.{0,15}(сдач|передач)",
-        "выдача_ключей": r"выдач.{0,10}ключ|передач.{0,12}квартир",
-        "протечки": r"протеч|затоплен",
-        "качество_ук": r"управляющ.{0,10}компан|\bУК\b",
-        "суд": r"\bсуд\b|судебн",
-        "неустойка": r"неустойк",
-        "разные_ответы": r"разн.{0,10}ответ|противоречив.{0,10}информац",
-        "инициативная_группа": r"инициативн.{0,10}групп",
-        "жалобы_в_органы": r"прокуратур|жалоб.{0,15}(орган|надзор)",
-        "смена_собственника": r"смен.{0,5}собственник",
-    }
-    inferred = {
-        topic
-        for topic, pattern in hints.items()
-        if re.search(pattern, brief.get("summary", ""), re.I)
-    } - topics
+    quotes = [e["quote"] for e in brief.get("evidence", [])]
+    quotes += [s["quote"] for s in brief.get("dossier", {}).get("signals", [])]
+    quotes += [a["quote"] for a in (brief.get("followup") or {}).get("answers", [])]
+    factual_text = " ".join(quotes) if quotes else brief.get("summary", "")
+    inferred = text_topics(factual_text) - topics
     topics |= inferred
     chosen = list(brief.get("offers", []))
     codes = {o["code"] for o in chosen}
@@ -94,4 +100,4 @@ def build_report(brief, library):
                 "starting_question": brief.get("check", "Подтвердить факты и границы проекта"),
             }
         )
-    return {"schema_version": 6, "products": products}
+    return {"schema_version": 7, "products": products}

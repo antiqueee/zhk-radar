@@ -43,6 +43,12 @@ with tempfile.TemporaryDirectory(prefix="radar-autonomy-ui-") as folder:
                 page.goto("http://127.0.0.1:8766")
                 page.locator("#dataset").select_option("demo")
                 page.locator('.record-name[data-open="demo-1"]').click()
+                expect(page.locator("#conversation-form")).to_be_visible()
+                page.locator("#conversation-form textarea").fill("Почему перенесли сроки?")
+                page.get_by_role("button", name="Задать вопрос", exact=True).click()
+                expect(page.locator("#conversation-history")).to_contain_text(
+                    "подключите OpenRouter", timeout=15000
+                )
                 page.locator("#analyst-tools > summary").click()
                 page.locator("#advanced-card > summary").click()
                 page.get_by_role(

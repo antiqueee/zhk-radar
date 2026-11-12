@@ -91,3 +91,19 @@ def test_model_json_fence_keeps_schema_and_rejects_truncation():
             parse_model_json(response(content), Findings)
     with pytest.raises(ValueError):
         parse_model_json(response('{"objects": []}', "length"), Findings)
+
+
+def test_strict_output_schema_keeps_local_validation():
+    import pytest
+
+    from radar.web.author import Authored, GroundedParagraph
+    from radar.web.model_output import structured_format
+
+    response_format = structured_format(Authored)
+    schema = response_format["json_schema"]["schema"]
+    assert response_format["json_schema"]["strict"] is True
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
+    assert "maxLength" not in schema["$defs"]["GroundedParagraph"]["properties"]["text"]
+    with pytest.raises(ValueError):
+        GroundedParagraph(text="x" * 601, source_ids=["test"])

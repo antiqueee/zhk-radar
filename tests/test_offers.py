@@ -25,9 +25,9 @@ def test_information_vacuum_selects_specific_offer():
     assert select([("разные_ответы", 10)])[0].code == "O3"
 
 
-def test_missing_chats_or_weak_evidence_prioritizes_diagnosis():
+def test_missing_chats_does_not_replace_relevant_service_with_audit():
     for override in [{"chats_connected": False}, {"low_confidence": True}]:
-        assert select([("разные_ответы", 10)], **override)[0].code == "O1"
+        assert select([("разные_ответы", 10)], **override)[0].code == "O3"
 
 
 def test_blocker_prevents_offer_including_diagnostic_fallback():
