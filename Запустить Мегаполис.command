@@ -11,18 +11,8 @@ if curl -fsS --max-time 1 http://127.0.0.1:8765/api/settings >/dev/null 2>&1; th
   open http://127.0.0.1:8765
   exit 0
 fi
-uv run --frozen radar serve &
-radar_pid=$!
-trap 'kill "$radar_pid" 2>/dev/null || true' EXIT INT TERM
-for attempt in {1..40}; do
-  if curl -fsS --max-time 1 http://127.0.0.1:8765/api/settings >/dev/null 2>&1; then
-    open http://127.0.0.1:8765
-    break
-  fi
-  if ! kill -0 "$radar_pid" 2>/dev/null; then
-    wait "$radar_pid"
-    exit 1
-  fi
-  sleep 0.25
-done
-wait "$radar_pid"
+if [[ ! -x .venv/bin/radar ]]; then
+  uv sync --frozen
+fi
+.venv/bin/python scripts/local_service.py start
+open http://127.0.0.1:8765
