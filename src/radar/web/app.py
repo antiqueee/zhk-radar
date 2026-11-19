@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -19,7 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from radar.briefs.offers import load_offers
 from radar.intake import read_workbook
 from radar.pipeline.evidence import validate_quote
-from radar.web import advanced, completion, operations, stoplist
+from radar.web import advanced, brand_analytics, completion, operations, stoplist
 from radar.web.auth import COOKIE, Auth, Login
 from radar.web.benchmark import (
     BenchmarkModels,
@@ -28,6 +29,9 @@ from radar.web.benchmark import (
     Review,
     save_models,
 )
+from radar.web.brand_analytics_queries import build_queries
+from radar.web.brand_analytics_sync import BrandAnalyticsSync, Connection
+from radar.web.brand_analytics_transport import read_export
 from radar.web.chat_analysis import analyze
 from radar.web.chats import ChatImport, aggregates, ingest_chat
 from radar.web.configuration import (
@@ -46,9 +50,22 @@ from radar.web.jobs import JobRunner
 from radar.web.maintenance import Maintenance
 from radar.web.operations import OperationsSettings, WeeklyScheduler
 from radar.web.pdf import render_pdf
+from radar.web.perplexity_route import openrouter_search_model
+from radar.web.report_status import (
+    download_status,
+    internal_download_status,
+    report_format_version,
+    report_group,
+)
 from radar.web.store import STATUSES, Store, now
 from radar.web.telegram import TelegramCode, TelegramLink, TelegramLogin, TelegramReader
 from radar.web.telegram_qr import QRPassword, TelegramQR
+
+REPORT_FORMAT_FILTER = (
+    "AND (json_extract(briefs.payload,'$.report_v2.meta.schema_version') IN ('5','8') "
+    "OR json_extract(briefs.payload,'$.report_pipeline.version') IN ('8','report-kit-v8') "
+    "OR json_type(briefs.payload,'$.report_qualification')='object') "
+)
 
 
 class Decision(BaseModel):
@@ -81,6 +98,7 @@ def create_app(root: Path | None = None):
     jobs = JobRunner(store)
     benchmark = BenchmarkRunner(store)
     maintenance = Maintenance(store)
+    brand_sync = BrandAnalyticsSync(store)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -99,7 +117,8 @@ def create_app(root: Path | None = None):
         for worker in workers:
             worker.close()
         # Keep the process lease if an external request outlives graceful shutdown.
-        jobs.close(release=not any(w.thread and w.thread.is_alive() for w in workers))
+        threads = [*tasks.threads, *(w.thread for w in workers if w is not tasks)]
+        jobs.close(release=not any(thread and thread.is_alive() for thread in threads))
 
     app = FastAPI(title="Мегаполис Интеледженс", docs_url="/api/docs", lifespan=lifespan)
     app.state.jobs = jobs
@@ -211,6 +230,49 @@ def create_app(root: Path | None = None):
 
         return catalog()
 
+    @app.get("/api/settings/brand-analytics")
+    def brand_analytics_status():
+        return brand_sync.status()
+
+    @app.put("/api/settings/brand-analytics")
+    def brand_analytics_save(data: Connection):
+        try:
+            return brand_sync.save(data)
+        except ValueError:
+            raise HTTPException(
+                422, "Проверьте адрес метода, ID тем и профиль Brand Analytics"
+            ) from None
+
+    @app.get("/api/settings/brand-analytics/queries")
+    def brand_analytics_queries(
+        max_topics: Literal["1", "2"] = "2", max_chars: int | None = None,
+    ):
+        try:
+            return build_queries(store, max_chars=max_chars, max_topics=int(max_topics))
+        except ValueError:
+            raise HTTPException(422, "Проверьте максимальную длину запроса") from None
+
+    @app.post("/api/settings/brand-analytics/import")
+    def brand_analytics_import(file: UploadFile):
+        maximum = 10 * 1024 * 1024
+        raw = file.file.read(maximum + 1)
+        if len(raw) > maximum:
+            raise HTTPException(413, "Выгрузка Brand Analytics превышает 10 МБ")
+        try:
+            messages = read_export(raw)
+            return brand_analytics.ingest_messages(store, messages)
+        except ValueError:
+            raise HTTPException(
+                422, "Проверьте формат выгрузки CSV или JSON Brand Analytics"
+            ) from None
+
+    @app.post("/api/settings/brand-analytics/sync", status_code=202)
+    def brand_analytics_sync():
+        try:
+            return brand_sync.submit()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
     @app.get("/api/benchmark/config")
     def benchmark_config():
         return benchmark.config()
@@ -293,6 +355,20 @@ def create_app(root: Path | None = None):
         stoplist.remove(store, ident)
         return {"removed": True}
 
+    def requires_v8(dataset):
+        return dataset != "demo" and configuration(root).get("RADAR_REPORT_KIT", "").lower() in {
+            "1", "true"
+        }
+
+    def latest_brief_row(ident, require_v8):
+        with store.connect() as db:
+            return db.execute(
+                "SELECT * FROM briefs WHERE record_id=? "
+                + (REPORT_FORMAT_FILTER if require_v8 else "")
+                + "ORDER BY id DESC LIMIT 1",
+                (ident,),
+            ).fetchone()
+
     @app.get("/api/records")
     def records(dataset: Literal["imported", "demo", "web"] = "imported"):
         excluded = stoplist.entries(store)
@@ -301,32 +377,87 @@ def create_app(root: Path | None = None):
 
         workflow.initialize(store)
         coverage = all_records(store)
+        require_v8 = requires_v8(dataset)
         with store.connect() as db:
             scores = {
                 r["record_id"]: {**json.loads(r["payload"]), "updated_at": r["updated_at"]}
                 for r in db.execute("SELECT * FROM candidate_scores")
             }
+            reports = {
+                row["record_id"]: report_group(json.loads(row["payload"]), require_v8=require_v8)
+                for row in db.execute(
+                    "SELECT record_id,payload FROM briefs WHERE id IN ("
+                    "SELECT MAX(briefs.id) FROM briefs JOIN records ON records.id=briefs.record_id "
+                    "WHERE records.dataset=? "
+                    + (REPORT_FORMAT_FILTER if require_v8 else "")
+                    + "GROUP BY briefs.record_id)",
+                    (dataset,),
+                )
+            }
+        no_report = report_group(None, require_v8=require_v8)
         rows = [
             {
                 **r,
                 "blocked": stoplist.match(r, excluded),
                 "ranking": scores.get(r["id"]),
                 "source_coverage": coverage.get(r["id"], summarize([])),
+                "report_status": reports.get(r["id"], no_report),
             }
             for r in store.records(dataset)
+            if not r.get("merged_into")
         ]
         return sorted(rows, key=lambda r: -(r["ranking"] or {}).get("rank_score", 0))
 
     @app.get("/api/records/{ident}")
     def record(ident: str):
-        from radar.web.coverage import all_records, summarize
+        from radar.web.coverage import for_record
+        from radar.web.report_search import get_research
 
         record = store.get(ident)
+        seen = {ident}
+        while (parent := record.get("merged_into")) and parent not in seen:
+            try:
+                record = store.get(parent)
+            except KeyError:
+                break
+            seen.add(parent)
+            ident = parent
+        require_v8 = requires_v8(record["dataset"])
+        brief = latest_brief_row(ident, require_v8)
+        research = get_research(store, ident)
+        research_metadata = None
+        if research:
+            research_metadata = {
+                key: research.get(key) for key in ("version", "created_at", "completed")
+            }
+            research_metadata["documents"] = [
+                {
+                    **{
+                        key: document.get(key)
+                        for key in (
+                            "source_id", "url", "title", "published_at", "read_status",
+                            "source_kind", "contour",
+                        )
+                    },
+                    **({"search_provider": "perplexity"}
+                       if document.get("search_provider") == "perplexity" else {}),
+                }
+                for document in research.get("documents", [])
+            ]
         return {
             **record,
             "dossier": dossier(store, ident),
+            "chat_stats": aggregates(store, ident),
             "blocked": stoplist.blocked(store, record),
-            "source_coverage": all_records(store).get(ident, summarize([])),
+            "source_coverage": for_record(store, ident),
+            "report_research": research_metadata,
+            "report_status": report_group(
+                json.loads(brief["payload"]) if brief else None, require_v8=require_v8
+            ),
+            "brand_analytics": [
+                {key: doc.get(key) for key in ("url", "title", "published_at", "contour")}
+                for doc in brand_analytics.report_documents(store, ident)
+            ],
         }
 
     @app.put("/api/records/{ident}")
@@ -380,7 +511,7 @@ def create_app(root: Path | None = None):
     tasks = advanced.install(app, store)
     from radar.web.automation import DailyWorker
 
-    daily = DailyWorker(store, telegram)
+    daily = DailyWorker(store, telegram, brand_sync=brand_sync)
     scheduler = WeeklyScheduler(store, jobs, telegram)
     app.state.scheduler = scheduler
 
@@ -496,6 +627,58 @@ def create_app(root: Path | None = None):
 
         return build(store, ident)
 
+    @app.get("/api/records/{ident}/brief/latest")
+    def latest_brief(ident: str):
+        record = store.get(ident)
+        require_v8 = requires_v8(record["dataset"])
+        row = latest_brief_row(ident, require_v8)
+        if not row:
+            return None
+        payload = json.loads(row["payload"])
+        format_version = report_format_version(payload)
+        status = internal_download_status(payload)
+        previous_approved_v8 = None
+        if format_version == "8" and (not status["downloadable"] or status.get("observation")):
+            with store.connect() as db:
+                previous_rows = db.execute(
+                    "SELECT id,version,created_at,payload FROM briefs "
+                    "WHERE record_id=? AND id<? "
+                    "AND json_extract(payload,'$.report_v2.meta.schema_version')='8' "
+                    "AND json_extract(payload,'$.report_pipeline.passed')=1 "
+                    "ORDER BY id DESC",
+                    (ident, row["id"]),
+                )
+                for previous in previous_rows:
+                    if download_status(json.loads(previous["payload"]))["downloadable"]:
+                        previous_approved_v8 = {
+                            key: previous[key] for key in ("id", "version", "created_at")
+                        }
+                        break
+        return {
+            "id": row["id"],
+            "version": row["version"],
+            "created_at": row["created_at"],
+            "format_version": format_version,
+            "current_format": not require_v8 or format_version == "8",
+            "report_status": report_group(payload, require_v8=require_v8),
+            **status,
+            "previous_approved_v8": previous_approved_v8,
+            "payload": {
+                "report_pipeline": {
+                    key: payload.get("report_pipeline", {}).get(key)
+                    for key in ("version", "status", "passed", "issues", "usage")
+                },
+                "report_qualification": payload.get("report_qualification", {}),
+                "research_sources": [
+                    {
+                        key: source.get(key)
+                        for key in ("n", "url", "title", "publisher", "display_date")
+                    }
+                    for source in payload.get("report_pipeline", {}).get("sources", [])
+                ],
+            },
+        }
+
     @app.get("/api/briefs")
     def briefs(dataset: Literal["imported", "demo", "web"] = "imported"):
         with store.connect() as db:
@@ -510,12 +693,53 @@ def create_app(root: Path | None = None):
     def pdf(brief_id: int):
         with store.connect() as db:
             row = db.execute(
-                "SELECT payload,version,created_at FROM briefs WHERE id=?", (brief_id,)
+                "SELECT payload,version,created_at,record_id FROM briefs WHERE id=?", (brief_id,)
             ).fetchone()
         if not row:
             raise HTTPException(404, "Расклад не найден")
+        payload = json.loads(row[0])
+        outcome = internal_download_status(payload)
+        if not outcome["downloadable"]:
+            raise HTTPException(409, outcome["label"] + ": " + outcome["detail"])
+        if outcome.get("observation"):
+            from radar.reports.observation_v8 import observation_data
+            from radar.reports.render import pdf_bytes
+
+            record = store.get(row["record_id"])
+            domains = record.get("official_domains") or []
+            official = [
+                entry for entry in record["evidence"]
+                if (host := urlsplit(entry["url"]).hostname) and any(
+                    host == domain or host.endswith("." + domain) for domain in domains
+                )
+            ]
+            try:
+                binary = pdf_bytes(observation_data(payload, evidence=official))
+            except ValueError as exc:
+                raise HTTPException(503, "Не удалось сформировать PDF наблюдения.") from exc
+            return Response(
+                binary,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'inline; filename="radar-observation-{brief_id}.pdf"'
+                },
+            )
+        cached_pdf = root / "data/local/report-pdfs" / f"{brief_id}.pdf"
+        report_v2 = payload.get("report_v2") or {}
+        brief = {**payload, "version": row[1], "created_at": row[2]}
+        if (report_v2.get("meta") or {}).get("schema_version") == "8":
+            try:
+                binary = render_pdf(brief, cache_path=cached_pdf)
+            except ValueError as exc:
+                raise HTTPException(503, "Не удалось скачать PDF. Повторите загрузку.") from exc
+        else:
+            binary = (
+                cached_pdf.read_bytes()
+                if report_v2 and cached_pdf.exists()
+                else render_pdf(brief)
+            )
         return Response(
-            render_pdf({**json.loads(row[0]), "version": row[1], "created_at": row[2]}),
+            binary,
             media_type="application/pdf",
             headers={"Content-Disposition": f'inline; filename="radar-brief-{brief_id}.pdf"'},
         )
@@ -610,12 +834,24 @@ def create_app(root: Path | None = None):
         cfg = configuration(root)
         raw_models = raw_model_config(root)
         selected_model = model_config(root)["extract"].get("model", "")
+        perplexity_route = ""
+        if openrouter_search_model(root, cfg):
+            perplexity_route = "openrouter"
+        elif cfg.get("PERPLEXITY_API_KEY"):
+            perplexity_route = "direct"
         services = [
             ("OpenRouter", ["OPENROUTER_API_KEY"], "Извлечение фактов и текст расклада"),
             (
                 "Yandex Search",
                 ["YANDEX_SEARCH_API_KEY", "YANDEX_FOLDER_ID"],
                 "Поиск новых сигналов",
+            ),
+            (
+                "Perplexity через OpenRouter" if perplexity_route == "openrouter"
+                else "Perplexity Search",
+                ["OPENROUTER_API_KEY"] if perplexity_route == "openrouter"
+                else ["PERPLEXITY_API_KEY"],
+                "Дополнительный поиск источников",
             ),
             ("Telegram-бот", ["TG_BOT_TOKEN", "TG_GROUP_ID"], "Дайджест и уведомления"),
             (
@@ -627,6 +863,7 @@ def create_app(root: Path | None = None):
         ]
         return {
             "mode": "server" if auth.config["enabled"] else "local",
+            "perplexity_search_route": perplexity_route,
             "fields": {key: bool(cfg.get(key)) for key in KEYS},
             "model": selected_model,
             "review_model": model_config(root).get("review", {}).get("model", ""),

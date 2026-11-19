@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from radar.web.configuration import configuration, model_config, model_options
 from radar.web.discovery import call_json
+from radar.web.model_gateway import routed_client
 from radar.web.model_output import parse_model_json
 from radar.web.operations import reserve_call
 from radar.web.store import now
@@ -293,7 +294,7 @@ def semantic_review(store, ident, reviewer=review_model, client=None):
                 result = ReviewResult.model_validate_json(old[0])
             else:
                 reserve_call(store, "review:" + key, "review-model")
-                client = client or httpx.Client(timeout=httpx.Timeout(90, connect=15))
+                client = client or routed_client(cfg, timeout=httpx.Timeout(90, connect=15))
                 result = reviewer(client, cfg, model, payload, list(docs.values()))
                 with store.connect() as db:
                     db.execute(

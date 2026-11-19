@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from radar.web.app import create_app
 from radar.web.store import Store
@@ -209,3 +209,272 @@ def test_chat_import_updates_pdf_version_and_topics(client):
     assert "42 сообщений" in text
     assert "9 авторов" in text
     assert client.post("/api/records/demo-1/brief").json()["id"] == after["id"]
+
+
+def test_download_latest_does_not_submit_generation_or_mutate_record(client):
+    assert client.get("/api/records/demo-1/brief/latest").json() is None
+    saved = client.post("/api/records/demo-1/brief").json()
+    before = client.get("/api/records/demo-1").json()["revision"]
+    for _ in range(2):
+        latest = client.get("/api/records/demo-1/brief/latest").json()
+        assert latest["id"] == saved["id"]
+        response = client.get(f"/api/briefs/{latest['id']}/pdf")
+        assert response.status_code == 200 and response.content.startswith(b"%PDF")
+    assert client.get("/api/records/demo-1").json()["revision"] == before
+    with client.app.state.store.connect() as db:
+        assert db.execute("SELECT count(*) FROM object_tasks").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM briefs WHERE record_id='demo-1'").fetchone()[0] == 1
+
+
+def test_latest_download_respects_enabled_report_format(client):
+    store = client.app.state.store
+    (store.root / ".env").write_text("RADAR_REPORT_KIT=true\n")
+    with store.connect() as db:
+        db.execute("UPDATE records SET dataset='web' WHERE id='demo-1'")
+    legacy = store.save_brief("demo-1", {"name": "Test", "report": {}})
+    assert client.get("/api/records/demo-1/brief/latest").json() is None
+    assert client.get("/api/records?dataset=web").json()[0]["report_status"]["code"] == "none"
+    modern = store.save_brief(
+        "demo-1",
+        {
+            "report_v2": {"meta": {"layout": "full", "schema_version": "5"}},
+            "report_pipeline": {"status": "passed", "passed": True},
+        },
+    )
+    later_legacy = store.save_brief("demo-1", {"name": "Test old", "report": {}})
+    assert later_legacy["id"] > modern["id"] > legacy["id"]
+    assert client.get("/api/records/demo-1/brief/latest").json()["id"] == modern["id"]
+    latest = client.get("/api/records/demo-1/brief/latest").json()
+    assert latest["format_version"] == "5"
+    assert latest["current_format"] is False
+    assert latest["report_status"]["code"] == "outdated"
+    web_records = client.get("/api/records?dataset=web").json()
+    assert web_records[0]["report_status"] == latest["report_status"]
+    assert client.get("/api/records/demo-1").json()["report_status"] == latest["report_status"]
+    (store.root / ".env").write_text("RADAR_REPORT_KIT=false\n")
+    latest = client.get("/api/records/demo-1/brief/latest").json()
+    assert latest["id"] == later_legacy["id"]
+    assert latest["report_status"]["code"] == "ready"
+
+
+def test_latest_report_identifies_v8_without_returning_full_report(client):
+    store = client.app.state.store
+    (store.root / ".env").write_text("RADAR_REPORT_KIT=true\n")
+    with store.connect() as db:
+        db.execute("UPDATE records SET dataset='web' WHERE id='demo-1'")
+    current = store.save_brief("demo-1", {
+        "report_v2": {"meta": {"schema_version": "8"}},
+        "report_pipeline": {"version": "8", "status": "passed", "passed": True},
+    })
+    latest = client.get("/api/records/demo-1/brief/latest").json()
+    assert latest["id"] == current["id"]
+    assert latest["format_version"] == "8"
+    assert latest["current_format"] is True
+    assert latest["downloadable"] is True
+    assert "report_v2" not in latest["payload"]
+
+
+def test_latest_v8_qualification_is_current_even_without_a_pdf(client):
+    store = client.app.state.store
+    (store.root / ".env").write_text("RADAR_REPORT_KIT=true\n")
+    with store.connect() as db:
+        db.execute("UPDATE records SET dataset='web' WHERE id='demo-1'")
+    store.save_brief("demo-1", {
+        "report_qualification": {"verdict": "watch", "reasons": ["below_threshold"]},
+        "report_pipeline": {"version": "report-kit-v8", "status": "watch", "passed": False},
+    })
+    latest = client.get("/api/records/demo-1/brief/latest").json()
+    assert latest["format_version"] == "8"
+    assert latest["current_format"] is True
+    assert latest["downloadable"] is False
+    assert latest["report_status"]["code"] == "watch"
+    web_records = client.get("/api/records?dataset=web").json()
+    assert web_records[0]["report_status"] == latest["report_status"]
+
+
+def test_latest_v8_draft_exposes_a_separate_earlier_approved_version(client):
+    store = client.app.state.store
+    (store.root / ".env").write_text("RADAR_REPORT_KIT=true\n")
+    with store.connect() as db:
+        db.execute("UPDATE records SET dataset='web' WHERE id='demo-1'")
+    approved = store.save_brief("demo-1", {
+        "report_v2": {"meta": {"schema_version": "8"}},
+        "report_pipeline": {"status": "passed", "passed": True},
+    })
+    store.save_brief("demo-1", {
+        "report_v2": {"meta": {"schema_version": "8"}},
+        "report_pipeline": {"status": "manual", "passed": True},
+    })
+    store.save_brief("demo-1", {
+        "report_v2": {"meta": {"schema_version": "5"}},
+        "report_pipeline": {"status": "passed", "passed": True},
+    })
+    draft = store.save_brief("demo-1", {
+        "report_v2": None,
+        "report_pipeline": {"version": "report-kit-v8", "status": "manual", "passed": False},
+    })
+
+    latest = client.get("/api/records/demo-1/brief/latest").json()
+    assert latest["id"] == draft["id"]
+    assert latest["format_version"] == "8" and latest["downloadable"] is False
+    assert latest["label"] == "Нужна редакторская проверка"
+    fallback = latest["previous_approved_v8"]
+    assert (fallback["id"], fallback["version"]) == (approved["id"], approved["version"])
+    assert client.get(f"/api/briefs/{draft['id']}/pdf").status_code == 409
+
+
+def test_download_v8_reuses_valid_cache_and_recovers_corrupt_cache(client, monkeypatch):
+    from radar.reports import render
+    from radar.reports.schema_v8 import ReportV8
+
+    store = client.app.state.store
+    (store.root / ".env").write_text("RADAR_REPORT_KIT=true\n")
+    with store.connect() as db:
+        db.execute("UPDATE records SET dataset='web' WHERE id='demo-1'")
+    fixture = render.ROOT / "gold/v8/nametkin-tower.json"
+    report = ReportV8.model_validate_json(fixture.read_bytes()).model_dump()
+    approved = store.save_brief("demo-1", {
+        "dataset": "web",
+        "report_v2": report,
+        "report_pipeline": {"status": "passed", "passed": True},
+        "report_qualification": {"verdict": "report_full"},
+    })
+    brief_id = approved["id"]
+    cache = store.root / "data/local/report-pdfs" / f"{brief_id}.pdf"
+    writer = PdfWriter()
+    for _ in range(6):
+        writer.add_blank_page(width=595, height=842)
+    document = io.BytesIO()
+    writer.write(document)
+    pdf = document.getvalue()
+    render.write_pdf_cache(cache, pdf)
+    calls = []
+
+    def rerender(data):
+        calls.append(data)
+        return pdf
+
+    monkeypatch.setattr(render, "pdf_bytes", rerender)
+    latest = client.get("/api/records/demo-1/brief/latest").json()
+    assert (latest["id"], latest["format_version"], latest["downloadable"]) == (brief_id, "8", True)
+    url = f"/api/briefs/{brief_id}/pdf"
+    assert client.get(url).content == pdf
+    assert not calls
+
+    for damaged in (b"", pdf[:-20]):
+        cache.write_bytes(damaged)
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/pdf"
+        assert len(PdfReader(io.BytesIO(response.content), strict=True).pages) == 6
+        assert cache.read_bytes() == response.content
+        assert calls[-1]["meta"]["schema_version"] == "8"
+    assert len(calls) == 2
+    assert client.get(url).content == pdf
+    assert len(calls) == 2
+
+    cache.write_bytes(b"")
+    preview = client.get(f"/api/briefs/{brief_id}/client-preview")
+    assert preview.status_code == 200 and preview.content == pdf
+    assert cache.read_bytes() == pdf and len(calls) == 3
+
+    cache.write_bytes(b"")
+    monkeypatch.setattr(render, "pdf_bytes", lambda _: b"incomplete")
+    response = client.get(url)
+    assert response.status_code == 503
+    assert response.headers["content-type"] == "application/json"
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM object_tasks").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM briefs").fetchone()[0] == 1
+
+
+def test_record_exposes_extended_search_metadata_without_raw_documents(client):
+    from radar.web.report_search import initialize
+
+    store = client.app.state.store
+    initialize(store)
+    document = {
+        "source_id": "source-public", "url": "https://example.org/article",
+        "title": "Материал об объекте", "published_at": "2026-10-31",
+        "read_status": "loaded", "source_kind": "page", "contour": "media",
+        "text": "RAW_PAGE_MUST_NOT_SHIP", "messages": [{"text": "RAW_CHAT_MUST_NOT_SHIP"}],
+        "message_urls": ["https://t.me/private/secret"],
+    }
+    research = {
+        "version": "object-research-v5", "created_at": "2026-11-16T12:00:00+00:00",
+        "completed": False, "documents": [document],
+        "queries": ["INTERNAL_QUERY_MUST_NOT_SHIP"],
+    }
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO report_research VALUES(?,?,?)",
+            ("demo-1", json.dumps(research), research["created_at"]),
+        )
+    response = client.get("/api/records/demo-1")
+    metadata = response.json()["report_research"]
+    assert set(metadata) == {"version", "created_at", "completed", "documents"}
+    assert metadata["completed"] is False
+    assert metadata["documents"] == [{
+        key: document[key] for key in (
+            "source_id", "url", "title", "published_at", "read_status", "source_kind", "contour"
+        )
+    }]
+    assert "MUST_NOT_SHIP" not in response.text
+    assert "private/secret" not in response.text
+    assert client.get("/api/records/demo-2").json()["report_research"] is None
+
+
+def test_record_chat_counts_survive_without_an_automatic_screening(client):
+    before = client.get("/api/records/demo-1").json()["chat_stats"]
+    assert before["messages_30d"] == 0 and before["chats"] == []
+    client.post("/api/chats/demo")
+    record = client.get("/api/records/demo-1").json()
+    assert record["chat_stats"]["messages_30d"] == 42
+    assert len(record["chat_stats"]["chats"]) == 1
+    assert record["chat_stats"]["labelled"] == 42
+    assert client.get("/api/records/demo-1/intelligence").json()["screening"] is None
+
+
+@pytest.mark.parametrize('status', ['hold', 'watch', 'manual'])
+def test_unqualified_or_unapproved_report_is_never_downloaded_even_if_cached(client, status):
+    store = client.app.state.store
+    payload = {
+        'name': 'Тест',
+        'report_pipeline': {'status': status, 'passed': False},
+        'report_qualification': {
+            'verdict': status if status != 'manual' else 'report_full',
+            'reasons': ['below_threshold'] if status == 'watch' else [],
+            'manual_checks': ['Проверить текущий статус'],
+        },
+    }
+    if status == 'manual':
+        payload['report_v2'] = {'meta': {'schema_version': '5'}}
+    brief = store.save_brief('demo-1', payload)
+    cache = store.root / 'data/local/report-pdfs'
+    cache.mkdir(parents=True)
+    (cache / f"{brief['id']}.pdf").write_bytes(b'%PDF-old-unapproved')
+    response = client.get(f"/api/briefs/{brief['id']}/pdf")
+    assert response.status_code == 409
+    assert not response.content.startswith(b'%PDF')
+    history = client.get('/api/records/demo-1/brief-history').json()
+    assert history[0]['downloadable'] is False
+    assert client.get(f"/api/briefs/{brief['id']}/client-preview").status_code == 400
+
+
+def test_latest_qualification_supersedes_previously_passed_pdf(client):
+    store = client.app.state.store
+    (store.root / '.env').write_text('RADAR_REPORT_KIT=true\n')
+    with store.connect() as db:
+        db.execute("UPDATE records SET dataset='web' WHERE id='demo-1'")
+    store.save_brief('demo-1', {
+        'report_v2': {'meta': {'schema_version': '5'}},
+        'report_pipeline': {'status': 'passed', 'passed': True},
+    })
+    hold = store.save_brief('demo-1', {
+        'report_qualification': {'verdict': 'hold', 'reasons': ['developer_unknown']},
+        'report_pipeline': {'status': 'hold', 'passed': False},
+    })
+    latest = client.get('/api/records/demo-1/brief/latest').json()
+    assert latest['id'] == hold['id']
+    assert latest['downloadable'] is False
+    assert 'Не установлен застройщик' in latest['detail']

@@ -1,6 +1,7 @@
 let objectTaskTimer;
 async function loadAdvanced(id) {
-  const value=await api('/records/'+id+'/intelligence');
+  const value=await objectIntelligence(id);
+  if(state.selected?.id!==id || !$('#detail').open)return;
   const score=value.score;
   const el=document.createElement('details');el.id='advanced-card';
   el.innerHTML=`<summary>Дополнительный анализ и предложение</summary><p>Очередь исследования: ${score.rank_score} баллов. ${score.excluded?'Объект исключён из отбора.':score.needs_research?'Есть основания для дополнительной проверки.':'Недостаточно свежих подтверждённых сведений.'}</p><p class="caption">${score.reasons.map(esc).join('<br>')}</p>
@@ -10,7 +11,7 @@ async function loadAdvanced(id) {
   <details><summary>Предложенные чаты</summary><p class="caption">Проверьте название, описание и адрес объекта. Скрининг автоматически подключает чаты при совпадении названия, региона и корпуса. Спорные совпадения проверяются здесь; приложение не вступает в группы.</p>${value.chat_candidates.map(c=>`<article class="weekly-item"><a href="${safeURL(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.payload.title||c.url)}</a><p class="caption">${esc(c.url)} · ${esc(({suggested:'Требует проверки',accepted:'Добавлен',rejected:'Отклонён'})[c.status])}</p><button class="button" data-advanced="inspect" data-url="${esc(c.url)}">Проверить описание</button> ${c.status==='suggested'?`<button class="button" data-advanced="accept" data-url="${esc(c.url)}">Это нужный чат — добавить</button> <button class="button quiet" data-advanced="reject" data-url="${esc(c.url)}">Не подходит</button>`:''}<div class="chat-inspection"></div></article>`).join('')||'<p>Кандидатов пока нет. Нажмите «Найти открытые чаты».</p>'}</details>
   <details><summary>Динамика обсуждений: неделя к неделе</summary><p>Сообщения: ${value.dynamics.previous.messages} → ${value.dynamics.current.messages}. Авторы: ${value.dynamics.previous.authors} → ${value.dynamics.current.authors}.</p><p>Негативных среди размеченных: ${value.dynamics.previous.negative_share??'—'}% → ${value.dynamics.current.negative_share??'—'}%.</p><p>${value.dynamics.signals.map(esc).join('<br>')||'Заметных изменений с достаточной базой сравнения не обнаружено.'}</p><p class="caption">${esc(value.dynamics.note)}</p></details>`;
   $('#completion-card').prepend(el);
-  const last=await api('/tasks/latest');
+  const last=await api('/records/'+id+'/task');
   if(last?.record_id===id)await watchObjectTask(last.id,false);
   await loadExtraSources(id);
   applyRole();
@@ -93,7 +94,7 @@ document.addEventListener('submit',async e=>{
 });
 
 async function loadExtraSources(id){
- const value=await api('/records/'+id+'/extra-sources');const b=value.binding;const el=document.createElement('details');el.id='extra-sources-card';
+ const value=await api('/records/'+id+'/extra-sources');if(state.selected?.id!==id || !$('#detail').open)return;const b=value.binding;const el=document.createElement('details');el.id='extra-sources-card';
  el.innerHTML=`<summary>Вакансии, VK и упоминания в ЕФРСБ</summary><p class="caption">Укажите проверенные идентификаторы. Эти источники дают контекст для аналитика; они не меняют юридический статус и не подтверждают проблемы ЖК автоматически.</p><form id="extra-source-binding">
  ${[['hh_employer','ID работодателя hh.ru'],['vk_group','Адрес группы VK без vk.com/'],['inn','ИНН юридического лица'],['legal_name','Полное наименование юрлица']].map(([k,t])=>`<label class="field">${t}<input name="${k}" value="${esc(b[k])}"></label>`).join('')}
  <label class="check-line"><input type="checkbox" name="confirmed" ${b.confirmed?'checked':''}> Я сверил связь источников и юрлица с объектом</label><label class="check-line"><input type="checkbox" name="automatic" ${b.automatic?'checked':''}> Проверять с недельным мониторингом (ЕФРСБ — раз в месяц)</label><button class="button">Сохранить источники</button></form><button class="button" data-advanced="extra_sources">Собрать дополнительные сигналы</button>

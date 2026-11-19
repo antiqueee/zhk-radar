@@ -18,16 +18,17 @@ dependencies = [
     "python-multipart>=0.0.20,<1",
     "httpx>=0.28,<1",
     "reportlab>=4,<5",
+    "playwright>=1.50,<2",
     "telethon>=1.45,<2",
     "google-auth>=2.40,<3",
     "requests>=2.32,<3",
     "boto3>=1.35,<2",
     "cryptography>=44,<51",
+    "python-socks[asyncio]>=2.7,<3",
 ]
 
 [dependency-groups]
 dev = [
-    "playwright>=1.50,<2",
     "pypdf>=5,<7",
     "pytest>=8,<10",
     "ruff>=0.9,<1",

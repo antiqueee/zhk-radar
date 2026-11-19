@@ -15,7 +15,18 @@ from radar.web.store import Store, now
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    from radar.web import prospecting
+    from radar.web import discovery, prospecting
+
+    fake_time = [0.0]
+
+    def fake_sleep(seconds):
+        fake_time[0] += seconds
+
+    monkeypatch.setattr(
+        discovery,
+        "YANDEX_PACER",
+        discovery.YandexPacer(clock=lambda: fake_time[0], sleep=fake_sleep),
+    )
 
     monkeypatch.setattr(
         prospecting, "seeds", lambda *a: {"queries": [], "developers": [], "errors": []}

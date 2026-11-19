@@ -346,3 +346,13 @@ def test_invalid_chat_classification_never_changes_messages_or_recharges(store):
             analyze(store, "demo-1", classifier=bad)
     assert usage(store)["calls"] == 1
     assert aggregates(store, "demo-1")["topics"] == [("не_размечено", 1)]
+
+
+def test_disabled_call_caps_keep_accounting(store):
+    from radar.web.operations import remaining_calls
+
+    save(store, OperationsSettings(limits_enabled=False, per_run=1, daily=1, monthly=1))
+    for _ in range(3):
+        reserve_call(store, "job", "report-model")
+    assert remaining_calls(store, "job") == float("inf")
+    assert usage(store)["calls"] == 3

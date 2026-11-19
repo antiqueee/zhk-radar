@@ -5,7 +5,7 @@ import json
 
 from radar.briefs.offers import PainWeight, load_offers, select_offers
 from radar.briefs.report import build_report
-from radar.web import registry, stoplist
+from radar.web import brand_analytics, registry, stoplist
 from radar.web.chats import aggregates
 from radar.web.dossiers import dossier
 from radar.web.pdf import render_pdf
@@ -75,9 +75,27 @@ def payload_for(store, ident):
             "не подтверждает подлинность документа. Предложения — гипотезы для обсуждения."
         ),
     )
+    for key in (
+        "address",
+        "aliases",
+        "eisgs_id_hints",
+        "source_record_ids",
+        "source_imports",
+        "report_scope",
+        "official_domains",
+        "monitoring_snapshot",
+        "subobjects",
+    ):
+        if key in record:
+            payload[key] = record[key]
     from radar.web.workflow import latest_research
 
     payload["followup"] = latest_research(store, ident)
+    from radar.web.report_search import get_research
+
+    payload["report_research"] = get_research(store, ident)
+    if imported := brand_analytics.report_documents(store, ident):
+        payload["brand_analytics_documents"] = imported
     payload["report"] = build_report(payload, library)
     from radar.briefs import methods
     from radar.web.evidence_context import sources_for

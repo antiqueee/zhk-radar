@@ -338,10 +338,10 @@ def test_sheets_owned_tabs_literal_values_notes_preserved_and_idempotent(store):
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         for _ in range(2):
-            assert (
-                sheets.sync(store, client=client, token_provider=lambda root: "dummy")["tabs"] == 8
-            )
-    assert len(tabs) == 8 and len(batches) == 2
+            assert sheets.sync(store, client=client, token_provider=lambda root: "dummy")[
+                "tabs"
+            ] == len(sheets.TABS)
+    assert len(tabs) == len(sheets.TABS) and len(batches) == 2
     assert not any("addSheet" in r for r in batches[1])
     manual = {tabs[sheets.PREFIX + name]["sheetId"] for name in ["Заметки", "Стоп-лист"]}
     assert not any(

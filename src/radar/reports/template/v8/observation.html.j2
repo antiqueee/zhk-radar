@@ -1,0 +1,163 @@
+{%- macro label(value, fallback) -%}{{ value or fallback }}{%- endmacro -%}
+{%- macro reference(n) -%}
+  {%- if n in src_url -%}
+    {%- set url = src_url[n] | observation_link -%}
+    {%- if url -%}<a class="ref" href="{{ url }}">{{ n }}</a>
+    {%- else -%}<span class="ref">{{ n }}</span>{%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}
+{%- macro header(section) -%}
+  <header class="hdr">
+    <div class="hdr__brand"><img src="assets/logo-mark-teal.png" alt=""><span>Мегаполис Интеледженс</span></div>
+    <div class="hdr__ctx"><span>{{ object.name }}</span><b>{{ section }}</b></div>
+  </header>
+{%- endmacro -%}
+{%- macro footer(page) -%}
+  <footer class="ftr">
+    <span>Режим наблюдения · V8</span><span>{{ meta.date }}</span><span class="ftr__pg">{{ page }} / 3</span>
+  </footer>
+{%- endmacro -%}
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<base href="{{ base_url }}">
+<title>Разбор объекта V8 · {{ object.name }}</title>
+<link rel="stylesheet" href="template/v8/report.css">
+<style>
+.observation-report .page{overflow-wrap:anywhere}
+.observation-report .hero__title p{display:block}
+.observation-report .hero__chips .chip__v{white-space:normal}
+.observation-report .hdr__ctx{max-width:49%;text-align:right}
+.observation-report .hdr__ctx b{white-space:nowrap}
+.observation-report .body{gap:5mm}
+.obs-note{padding:4.5mm 5mm;background:var(--mist);border-radius:2.4mm}
+.obs-note p{font-size:10.3pt;line-height:1.38}
+.obs-passport{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 5mm}
+.obs-passport div{border-top:.25mm solid var(--line);padding:2.2mm 0}
+.obs-passport dt{font-size:7.1pt;color:var(--ink-2)}
+.obs-passport dd{font-size:9pt;font-weight:600;margin-top:.8mm}
+.obs-facts{grid-template-columns:repeat(3,minmax(0,1fr))}
+.obs-empty{color:var(--ink-2);font-size:8.6pt;line-height:1.4}
+.obs-list{list-style:none}
+.obs-list > li{padding:1.6mm 0;border-top:.25mm solid var(--line);font-size:8.4pt;line-height:1.33}
+.obs-list > li:last-child{border-bottom:.25mm solid var(--line)}
+.obs-list a:not(.ref){color:var(--teal-deep);text-decoration:underline;text-underline-offset:.35mm}
+.obs-list--signals > li{display:grid;grid-template-columns:27mm minmax(0,1fr);gap:2mm}
+.obs-list--signals .obs-when{color:var(--ink-2);font-size:7.3pt}
+.obs-list--official strong{display:block;margin-bottom:.75mm}
+.obs-list--sources > li{display:grid;grid-template-columns:7mm minmax(0,1fr) 27mm;gap:2mm;align-items:start;padding:1.5mm 0;font-size:7.9pt}
+.obs-list--sources b{font:700 10pt/1.05 var(--display);color:var(--teal-deep)}
+.obs-list--sources time{text-align:right;font-size:7.2pt;color:var(--ink-2)}
+.obs-list--checks > li{padding-left:4.4mm;position:relative}
+.obs-list--checks > li::before{content:"";position:absolute;left:0;top:2.6mm;width:2mm;height:2mm;border:.27mm solid var(--teal-deep);border-radius:.45mm}
+</style>
+</head>
+<body class="observation-report is-compact">
+{%- set nlen = object.name | length -%}
+{%- set contours = qualification.active_contours -%}
+{%- set contour_count = contours | length if contours is sequence and contours is not string else contours -%}
+<section class="page page--cover" data-page="observation-passport">
+  <div class="hero">
+    <div class="hero__map"></div>
+    <div class="hero__top">
+      <div class="hero__logo">
+        <img class="hero__mark" src="assets/logo-mark-white.png" alt="">
+        <img class="hero__word" src="assets/logo-word-white.png" alt="Мегаполис">
+      </div>
+      <div class="hero__doc">Разбор объекта V8<i></i>{{ meta.date }}</div>
+    </div>
+    <div class="hero__title {{ 'hero__title--l' if nlen > 46 else ('hero__title--m' if nlen > 30 else '') }}">
+      <h1>{{ object.name }}</h1>
+      <p>Режим наблюдения</p>
+    </div>
+    <div class="hero__chips">
+      <div class="chip chip--medium"><span class="chip__k">Статус</span><span class="chip__v">{{ qualification.label }}</span></div>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="block">
+      <h2>Ситуация</h2>
+      <div class="obs-note"><p>{{ qualification.detail or qualification.label }}</p></div>
+    </div>
+    <div class="block">
+      <h2>Паспорт объекта</h2>
+      <dl class="obs-passport">
+        <div><dt>Застройщик</dt><dd>{{ label(object.developer, 'Требует подтверждения') }}</dd></div>
+        <div><dt>Город / регион</dt><dd>{{ label(object.city, 'Требует подтверждения') }}</dd></div>
+      </dl>
+    </div>
+    <div class="block">
+      <h2>Покрытие разбора</h2>
+      <div class="facts obs-facts">
+        <div class="fact"><div class="fact__v">{{ qualification.dated_evidence }}</div><div class="fact__l">Датированные свидетельства за 12 месяцев</div></div>
+        <div class="fact"><div class="fact__v">{{ contour_count }}</div><div class="fact__l">Контуры с актуальными сведениями</div></div>
+        <div class="fact"><div class="fact__v">{{ sources | length }}</div><div class="fact__l">Источники в приложенном реестре</div></div>
+      </div>
+    </div>
+  </div>
+  {{ footer(1) }}
+</section>
+
+<section class="page" data-page="observation-evidence">
+  {{ header('Наблюдения') }}
+  <div class="body">
+    <div class="ttl"><h1>Материалы наблюдения</h1></div>
+    {% if official %}
+    <div class="block">
+      <h2>Официальные материалы</h2>
+      <ul class="obs-list obs-list--official">
+      {% for row in official %}
+        {% set link = row.url | observation_link %}
+        <li><strong>{% if link %}<a href="{{ link }}">{{ row.title }}</a>{% else %}{{ row.title }}{% endif %}</strong><p>«{{ row.text }}»</p></li>
+      {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    <div class="block">
+      <h2>Сведения из сохранённых источников</h2>
+      {% if signals %}
+      <ul class="obs-list obs-list--signals">
+      {% for signal in signals %}
+        <li><span class="obs-when">{{ signal.date or 'Дата не указана' }}</span><p>{{ signal.text }}{{ reference(signal.source_n) }}</p></li>
+      {% endfor %}
+      </ul>
+      {% else %}<p class="obs-empty">В разборе пока нет наблюдений, подтверждённых источниками.</p>{% endif %}
+    </div>
+  </div>
+  {{ footer(2) }}
+</section>
+
+<section class="page" data-page="observation-sources">
+  {{ header('Источники') }}
+  <div class="body">
+    <div class="ttl"><h1>Источники и проверка</h1></div>
+    <div class="block">
+      <h2>Реестр источников</h2>
+      {% if sources %}
+      <ol class="obs-list obs-list--sources">
+      {% for row in sources %}
+        {% set link = row.url | observation_link %}
+        <li><b>{{ row.n }}</b><div>
+          {% if row.publisher %}<span>{{ row.publisher }}{% if row.title and row.title != row.publisher %} · {% endif %}</span>{% endif %}
+          {% if link %}<a href="{{ link }}">{{ row.title if row.title and row.title != row.publisher else 'Открыть источник' }}</a>
+          {% elif row.title != row.publisher %}{{ row.title }}{% endif %}
+        </div><time>{{ row.date or '' }}</time></li>
+      {% endfor %}
+      </ol>
+      {% else %}<p class="obs-empty">Сохранённых ссылок в реестре пока нет.</p>{% endif %}
+    </div>
+    <div class="block">
+      <h2>Что проверить</h2>
+      {% if qualification.manual_checks %}
+      <ul class="obs-list obs-list--checks">
+      {% for check in qualification.manual_checks %}<li>{{ check }}</li>{% endfor %}
+      </ul>
+      {% else %}<p class="obs-empty">Дополнительные вопросы пока не зафиксированы.</p>{% endif %}
+    </div>
+  </div>
+  {{ footer(3) }}
+</section>
+</body>
+</html>

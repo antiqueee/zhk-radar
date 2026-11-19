@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from radar.web import author, chat_analysis, chat_workflow, stoplist
+from radar.web import chat_analysis, chat_workflow, stoplist
+from radar.web import report_author as author
 from radar.web.configuration import configuration
 from radar.web.operations import send_digest
 from radar.web.store import now
@@ -79,8 +80,9 @@ def notice(store, ident, title):
 
 
 class DailyWorker:
-    def __init__(self, store, telegram, sender=send_digest):
+    def __init__(self, store, telegram, sender=send_digest, *, brand_sync=None):
         self.store, self.telegram, self.sender = store, telegram, sender
+        self.brand_sync = brand_sync
         self.stop = threading.Event()
         self.thread = None
         initialize(store)
@@ -120,6 +122,8 @@ class DailyWorker:
 
     def tick(self, clock=None):
         clock = clock or datetime.now(UTC)
+        if self.brand_sync:
+            self.brand_sync.tick(clock)
         cfg = settings(self.store)
         local = clock.astimezone(ZoneInfo("Europe/Moscow"))
         day = local.date().isoformat()
@@ -229,6 +233,8 @@ class DailyWorker:
                 )
 
     def start(self):
+        if self.brand_sync:
+            self.brand_sync.resume()
         with self.store.connect() as db:
             db.execute(
                 "UPDATE notifications SET status='uncertain',error='Прерывание во время доставки' "

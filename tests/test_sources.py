@@ -150,3 +150,49 @@ def test_advertising_html_change_does_not_change_document_identity(store):
 
     second, _ = load_page(store, "https://example.org/story", changed)
     assert first.id == second.id
+
+
+def test_access_challenge_is_not_an_article_or_a_full_cached_source(store):
+    from radar.web.sources import initialize_sources
+
+    html = "<title>Проверяем браузер</title><div>" + "Пожалуйста, подождите. " * 20 + "</div>"
+    with pytest.raises(SourceError, match="проверки доступа"):
+        fetch_page(
+            "https://example.org/blocked",
+            lambda url: (200, {"content-type": "text/html"}, html.encode()),
+        )
+    initialize_sources(store)
+    value = Page(
+        "https://example.org/blocked",
+        "https://example.org/blocked",
+        "loaded",
+        title="Вы не робот?",
+        text="Служебная проверка. " * 20,
+        fetched_at=datetime.now(UTC).isoformat(),
+        id="old-bot-page",
+    )
+    from dataclasses import asdict
+
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO source_pages VALUES(?,?,?,?)",
+            (value.id, value.url, value.fetched_at, json.dumps(asdict(value))),
+        )
+    page, cached = load_page(
+        store, value.url, lambda url: pytest.fail("Should not bypass the challenge")
+    )
+    assert cached and page.status == "protected" and page.text == ""
+
+
+def test_real_article_with_embedded_captcha_is_still_readable():
+    text = "Дольщики обсуждают перенос срока строительства. " * 80
+    html = (
+        "<title>Проверка качества стройки</title><article>"
+        + text
+        + "</article><form>captcha</form>"
+    )
+    page = fetch_page(
+        "https://example.org/article",
+        lambda url: (200, {"content-type": "text/html"}, html.encode()),
+    )
+    assert page.status == "loaded" and "Дольщики" in page.text

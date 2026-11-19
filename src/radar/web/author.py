@@ -3,9 +3,7 @@
 import hashlib
 import json
 import re
-import threading
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from radar.web import cases, review
@@ -14,11 +12,12 @@ from radar.web.chats import redact
 from radar.web.configuration import configuration, model_config
 from radar.web.discovery import call_json
 from radar.web.evidence_context import sources_for as sources_for
+from radar.web.model_gateway import routed_client
 from radar.web.model_output import parse_model_json, structured_format
 from radar.web.pdf import render_pdf
+from radar.web.record_locks import REPORT_LOCKS
+from radar.web.tasks import check_task_cancelled
 from radar.web.workflow import cached
-
-LOCK = threading.Lock()
 
 
 class UnadaptedMethodError(ValueError):
@@ -59,6 +58,8 @@ class Authored(BaseModel):
 def write_model(client, cfg, model, payload, sources, matches, criticism):
     prompt = (
         "Подготовь стратегическое предложение конфликтологического консалтинга для конкретного ЖК. "
+        "ДДУ означает договор долевого участия. Людей называй дольщиками или покупателями: "
+        "переговоры с дольщиками, инициативная группа дольщиков; не используй ДДУ вместо людей. "
         "Заказчик знает свою операционную ситуацию: не продавай ему выяснение статуса, "
         "проверку сроков или сбор сведений как основную ценность. Ценность — управляемый диалог, "
         "исполнение договорённостей, восстановление доверия, предотвращение эскалации. "
@@ -211,8 +212,9 @@ def validate(text, payload, sources, matches):
 
 
 def generate(store, ident, run_id, writer=write_model, critic=review.review_model, client=None):
-    if not LOCK.acquire(blocking=False):
-        raise ValueError("Подготовка предложения уже выполняется")
+    lock = REPORT_LOCKS.for_record(store, ident)
+    if not lock.acquire(blocking=False):
+        raise ValueError("Подготовка предложения по этому объекту уже выполняется")
     owns = client is None
     try:
         payload = payload_for(store, ident)
@@ -234,7 +236,7 @@ def generate(store, ident, run_id, writer=write_model, critic=review.review_mode
             raise ValueError("Больше 30 источников: нужен ручной отбор без скрытого усечения")
         matches = cases.matching(store, payload)
         base_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-        client = client or httpx.Client(timeout=120)
+        client = client or routed_client(cfg, timeout=120)
         criticism = None
         attempts = []
         for attempt in range(2):
@@ -333,8 +335,11 @@ def generate(store, ident, run_id, writer=write_model, critic=review.review_mode
         }
         candidate["cases"] = matches
         render_pdf(candidate)
+        check_task_cancelled()
         return store.save_brief(ident, candidate)
     finally:
-        if owns and client is not None:
-            client.close()
-        LOCK.release()
+        try:
+            if owns and client is not None:
+                client.close()
+        finally:
+            lock.release()

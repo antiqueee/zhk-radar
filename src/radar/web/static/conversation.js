@@ -1,26 +1,37 @@
 let conversationPoll;
+let conversationLoadGeneration=0;
 async function loadObjectConversation(id) {
-  clearTimeout(conversationPoll);
   if (state.selected?.id !== id || !$('#detail').open) return;
+  const generation=++conversationLoadGeneration;
+  clearTimeout(conversationPoll);
   let box = $('#object-conversation');
   if (!box) {
     box = document.createElement('section'); box.id = 'object-conversation'; box.className = 'section';
-    box.innerHTML = `<h3>Обсудить объект с аналитиком</h3><p class="caption">Факты — из материалов этого ЖК, предложения — с учётом методов Мегаполиса. Переписка сохраняется.</p><div id="conversation-history" aria-live="polite"></div><form id="conversation-form"><label class="field">Ваш вопрос<textarea name="question" required minlength="3" maxlength="2000" rows="3" placeholder="Почему перенесли сроки? Что предложить застройщику? Как построить диалог с покупателями?"></textarea></label><label class="check-line"><input name="search" type="checkbox"> Дополнительно поискать в интернете · до 2 поисковых запросов</label><button class="button primary" type="submit">Задать вопрос</button><span id="conversation-status" class="caption"></span></form>`;
+    box.innerHTML = `<h3>Обсудить объект с аналитиком</h3><p class="caption">Факты — из материалов этого ЖК, предложения — с учётом методов Мегаполиса. Переписка сохраняется.</p><div id="conversation-history" aria-live="polite"></div><form id="conversation-form"><label class="field">Ваш вопрос<textarea name="question" required minlength="3" maxlength="2000" rows="3" placeholder="Почему перенесли сроки? Что предложить застройщику? Как построить диалог с дольщиками?"></textarea></label><label class="check-line"><input name="search" type="checkbox"> Дополнительно поискать в интернете · до 2 поисковых запросов</label><button class="button primary" type="submit">Задать вопрос</button><span id="conversation-status" class="caption"></span></form>`;
     $('#analyst-tools').before(box);
     box.querySelector('form').addEventListener('submit', async e => {
       e.preventDefault(); e.stopPropagation();
       const form=e.currentTarget, button=form.querySelector('button');button.disabled=true;
-      const requestId=form.dataset.requestId || crypto.randomUUID();form.dataset.requestId=requestId;
+      const question=form.elements.question.value, search=form.elements.search.checked;
+      const requestKey=JSON.stringify([question,search]);
+      if(form.dataset.requestKey!==requestKey){form.dataset.requestId=crypto.randomUUID();form.dataset.requestKey=requestKey;}
+      const requestId=form.dataset.requestId;
       try {
-        await api('/records/'+id+'/conversation',{method:'POST',body:JSON.stringify({question:form.elements.question.value,search:form.elements.search.checked,request_id:requestId})});
-        form.elements.question.value='';delete form.dataset.requestId;
+        await api('/records/'+id+'/conversation',{method:'POST',body:JSON.stringify({question,search,request_id:requestId})});
+        if(form.elements.question.value===question)form.elements.question.value='';
+        delete form.dataset.requestId;delete form.dataset.requestKey;
         await loadObjectConversation(id);
-      } catch(err) {$('#conversation-status').textContent=err.message;delete form.dataset.requestId;button.disabled=false;}
+      } catch(err) {
+        // A lost response may hide an accepted question: retry the same request ID.
+        if(err.status && err.status<500){delete form.dataset.requestId;delete form.dataset.requestKey;}
+        if(state.selected?.id===id && $('#detail').open && $('#object-conversation')===box)box.querySelector('#conversation-status').textContent=err.message;
+        button.disabled=false;
+      }
     });
   }
   try {
     const turns=await api('/records/'+id+'/conversation');
-    if (state.selected?.id!==id || !$('#object-conversation')) return;
+    if (generation!==conversationLoadGeneration || state.selected?.id!==id || !$('#detail').open || $('#object-conversation')!==box) return;
     const pending=turns.some(t=>t.status==='pending');
     const signature=turns.map(t=>t.id+':'+t.status).join('|');
     const historyPane=$('#conversation-history');const changed=historyPane.dataset.signature!==signature;
@@ -30,5 +41,5 @@ async function loadObjectConversation(id) {
     $('#conversation-form button').disabled=pending;
     $('#conversation-status').textContent=pending?' Можно закрыть карточку — ответ сохранится.':'';
     if (pending) conversationPoll=setTimeout(()=>loadObjectConversation(id),2500);
-  } catch(err) {if($('#conversation-status'))$('#conversation-status').textContent=err.message;}
+  } catch(err) {if(generation===conversationLoadGeneration && state.selected?.id===id && $('#detail').open && $('#object-conversation')===box)box.querySelector('#conversation-status').textContent=err.message;}
 }

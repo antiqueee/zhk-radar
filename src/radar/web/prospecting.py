@@ -82,9 +82,12 @@ def save_leads(store, projects):
     """Keep agency leads in the investigation queue even without a fresh press mention."""
     from radar.web.discovery import Finding
     from radar.web.dossiers import object_key
+    from radar.web.record_identity import RecordResolver, identity_scope, unresolved_id
 
     ids, added = [], 0
     with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        resolver = RecordResolver(db)
         for item in projects:
             lead = Finding(
                 name=item["name"],
@@ -95,7 +98,15 @@ def save_leads(store, projects):
                 source_index=0,
                 quote="Объект из исходных материалов агентства",
             )
-            ident = "web-" + object_key(lead, "agency:" + item["id"])
+            source_url = "agency:" + item["id"]
+            base = "web-" + object_key(lead, source_url)
+            resolution = resolver.resolve(item, origin_record_id=item.get("id"), fallback_id=base)
+            ident = resolution.record_id or (
+                unresolved_id(base, item, source_url) if resolution.candidates else base
+            )
+            if ident in resolver.rows:
+                ids.append(ident)
+                continue
             payload = {
                 **item,
                 "id": ident,
@@ -109,10 +120,15 @@ def save_leads(store, projects):
                 "first_seen_at": now(),
                 "last_seen_at": now(),
                 "check": "Сверить актуальные сроки и обращения по этому ЖК.",
+                "identity_scope": identity_scope(item),
             }
+            if resolution.candidates:
+                payload["possible_duplicates"] = list(resolution.candidates)
+                payload["duplicate_check"] = resolution.reason
             added += db.execute(
                 "INSERT OR IGNORE INTO records(id,dataset,payload,updated_at) VALUES(?,?,?,?)",
                 (ident, "web", json.dumps(payload, ensure_ascii=False), now()),
             ).rowcount
+            resolver.add(ident, payload)
             ids.append(ident)
-    return ids, added
+    return list(dict.fromkeys(ids)), added

@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from telethon import TelegramClient, errors
@@ -48,6 +49,33 @@ class TelegramLink(BaseModel):
         return "https://t.me/" + match[1].lower()
 
 
+def proxy_options(value):
+    if not value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+        if (
+            parsed.scheme not in {"http", "socks5"}
+            or not parsed.hostname
+            or not port
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ValueError("Некорректная настройка маршрута Telegram") from None
+    return {
+        "proxy_type": parsed.scheme,
+        "addr": parsed.hostname,
+        "port": port,
+        "rdns": True,
+        "username": unquote(parsed.username) if parsed.username else None,
+        "password": unquote(parsed.password) if parsed.password else None,
+    }
+
+
 def factory(cfg, session):
     return TelegramClient(
         StringSession(session),
@@ -58,6 +86,7 @@ def factory(cfg, session):
         connection_retries=1,
         flood_sleep_threshold=0,
         timeout=15,
+        proxy=proxy_options(cfg.get("RADAR_TELEGRAM_PROXY_URL")),
     )
 
 

@@ -4,8 +4,12 @@ import math
 import re
 import threading
 import time
+from pathlib import Path
 
 import httpx
+
+from radar.web.configuration import configuration
+from radar.web.model_gateway import routed_client
 
 LOCK = threading.Lock()
 CACHE = {"expires": 0, "models": []}
@@ -40,7 +44,7 @@ def catalog():
         if CACHE["expires"] > time.time():
             return {"models": CACHE["models"], "cached": True}
         try:
-            with httpx.Client(timeout=15) as client:
+            with routed_client(configuration(Path.cwd()), timeout=15) as client:
                 rows = fetch_catalog(client)
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
             raise ValueError(

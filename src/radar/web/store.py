@@ -76,6 +76,7 @@ class Store:
 
     def ingest(self, book: dict) -> int:
         count = 0
+        imported_ids = []
         with self.connect() as db:
             for candidate in book["candidates"]:
                 claims = candidate["claims"]
@@ -118,6 +119,11 @@ class Store:
                     "INSERT OR IGNORE INTO records(id,dataset,payload,updated_at) VALUES(?,?,?,?)",
                     (candidate["id"], "imported", json.dumps(payload, ensure_ascii=False), now()),
                 ).rowcount
+                imported_ids.append(candidate["id"])
+        if imported_ids:
+            from radar.web.brand_analytics import link_saved_messages
+
+            link_saved_messages(self, imported_ids)
         return count
 
     def seed(self):

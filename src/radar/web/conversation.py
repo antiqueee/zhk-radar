@@ -3,13 +3,13 @@
 import json
 from uuid import uuid4
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from radar.web.author import sources_for
 from radar.web.brief_service import payload_for
 from radar.web.configuration import configuration, model_config, model_options
 from radar.web.discovery import call_json
+from radar.web.model_gateway import routed_client
 from radar.web.model_output import parse_model_json, structured_format
 from radar.web.sources import fetch_page
 from radar.web.store import now
@@ -166,7 +166,8 @@ def answer(store, ident, run_id, writer=write_reply, searcher=query_documents, c
                 (ident,),
             ).fetchall()
         sources += [json.loads(s[0]) for s in saved_sources]
-        client = client or httpx.Client(timeout=120)
+        if client is None:
+            client = routed_client(cfg, timeout=120)
         queries = []
         if row["search"]:
             if not cfg.get("YANDEX_SEARCH_API_KEY") or not cfg.get("YANDEX_FOLDER_ID"):

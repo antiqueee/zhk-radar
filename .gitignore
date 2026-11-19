@@ -12,3 +12,5 @@ dist/
 
 tmp/
 output/
+/deploy/playwright-preload/*
+!/deploy/playwright-preload/.gitkeep

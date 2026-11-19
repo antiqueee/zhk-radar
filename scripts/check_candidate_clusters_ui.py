@@ -37,11 +37,28 @@ with tempfile.TemporaryDirectory(prefix="radar-clusters-ui-") as folder:
                 page = browser.new_page(viewport={"width": 1440, "height": 1000})
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
+                page.add_init_script("""{
+                  const original=window.fetch;
+                  window.fetch=async function(url,...args){
+                    if(String(url)==='/api/records/demo-1')
+                      await new Promise(r=>setTimeout(r,1200));
+                    if(String(url).endsWith('/intelligence'))
+                      await new Promise(r=>setTimeout(r,1600));
+                    return original.call(this,url,...args);
+                  };
+                }""")
                 page.goto("http://127.0.0.1:8767")
                 page.locator("#dataset").select_option("demo")
                 card = page.locator('[data-card="demo-1"]')
                 card.locator(".signal").click()
-                expect(page.locator("#detail")).to_be_visible()
+                expect(page.locator("#detail")).to_be_visible(timeout=500)
+                expect(page.locator("#detail-title")).to_have_text("Открываем объект")
+                # Closing while the slow response is pending must not reopen the dialog.
+                page.locator('[data-action="close-detail"]').click()
+                page.wait_for_timeout(1300)
+                expect(page.locator("#detail")).not_to_be_visible()
+                card.locator(".signal").click()
+                expect(page.locator("#detail")).to_be_visible(timeout=500)
                 expect(page.locator("#detail-title")).to_contain_text("Северный берег")
                 page.locator('[data-action="close-detail"]').click()
                 card.locator("[data-disposition]").click()
@@ -74,7 +91,8 @@ with tempfile.TemporaryDirectory(prefix="radar-clusters-ui-") as folder:
                 assert not errors, errors
                 browser.close()
                 print(
-                    "Full-card click, keyboard, hide/reload/restore, "
+                    "Immediate opening under delayed responses, no stale reopen, full-card click, "
+                    "keyboard, hide/reload/restore, "
                     "PDF isolation and mobile passed"
                 )
         finally:

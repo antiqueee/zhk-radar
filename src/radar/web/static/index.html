@@ -1,16 +1,105 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Мегаполис Интеледженс</title><link rel="stylesheet" href="/static/style.css"></head>
-<body>
-<header class="header"><a class="brand" href="/" aria-label="Мегаполис Интеледженс — главная"><span class="logo"><img src="/static/megapolis-logo.jpg" alt="Логотип Мегаполис"></span><span>Мегаполис <b>Интеледженс</b></span></a><button class="button quiet" data-action="settings"><span aria-hidden="true">⚙</span> Подключения</button><button class="button quiet" id="logout-button" data-completion="logout" hidden>Выйти</button></header>
-<main>
-<section class="intro"><p class="eyebrow">МОНИТОРИНГ ЖИЛЫХ КОМПЛЕКСОВ</p><h1>От застройщика — к конкретному предложению</h1><p class="lead">Портфели девелоперов, проблемы ЖК и открытые чаты. В результате — понятный разбор и PDF на две страницы.</p></section>
-<section class="search-panel" aria-label="Поиск объектов"><div class="search-controls"><label>Где искать<select id="search-region"><option value="capitals">Москва и Санкт-Петербург + области</option value="moscow">Москва и Московская область</option><option value="petersburg">Санкт-Петербург и Ленинградская область</option><option value="russia">Россия · 16 регионов</option></select></label><label class="period">Период<select id="search-period"><option value="month">Свежие сигналы за месяц</option><option value="fortnight">Свежие сигналы за 2 недели</option></select></label><label>Застройщик или ЖК<input id="search-target" maxlength="150" placeholder="Необязательно, например ГК Основа"></label><button class="button primary" id="find-button" data-action="scan">Найти объекты <span aria-hidden="true">↗</span></button></div><div class="steps"><span><b>1</b> Поиск ЖК и чатов</span><i>→</i><span><b>2</b> Разбор с источниками</span><i>→</i><span><b>3</b> Предложение · 2 страницы</span><button class="button quiet demo-scan" data-action="demo-scan">Попробовать без ключей</button></div></section>
-<div id="scan-status" role="status" aria-live="polite"></div>
-<section class="results"><div class="results-heading"><div><h2>Объекты <span id="count"></span></h2><p id="data-note"></p></div><div class="results-actions"><select id="dataset" aria-label="Источник объектов"><option value="web">Из интернета</option><option value="imported">Материалы агентства</option><option value="demo">Демо-примеры</option></select><button class="button quiet" data-action="all-records">Все сохранённые</button><button class="button quiet" data-action="import">Добавить Excel</button></div></div><div class="filter"><input id="filter" type="search" aria-label="Найти в списке" placeholder="Найти ЖК или девелопера в списке"><span id="filter-count"></span><label class="check-line"><input type="checkbox" id="show-blocked"><span>Показать скрытые (<span id="hidden-count">0</span>)</span></label></div><div id="records" aria-live="polite"></div><div id="pagination"></div></section>
-</main>
-<footer><span>Мегаполис Интеледженс</span><span>Внутренний инструмент агентства</span></footer>
-<dialog id="detail" aria-labelledby="detail-title"><div id="detail-content"></div></dialog>
-<dialog id="connections" aria-labelledby="connections-title"><div id="connections-content"></div></dialog>
-<div id="toast" role="status" aria-live="polite"></div><input type="file" id="excel-file" accept=".xlsx" hidden><input type="file" id="chat-file" accept=".json" hidden>
-<input type="file" id="registry-file" accept=".json" hidden><script src="/static/app.js"></script><script src="/static/operations.js"></script><script src="/static/completion.js"></script><script src="/static/advanced.js"></script><script src="/static/conversation.js"></script></body></html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Мегаполис Интеледженс</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/workspace.css">
+</head>
+<body class="workspace-page">
+  <header class="header">
+    <a class="brand" href="/" aria-label="Мегаполис Интеледженс — главная">
+      <span class="logo"><img src="/static/megapolis-logo.jpg" alt=""></span>
+      <span>Мегаполис <b>Интеледженс</b></span>
+    </a>
+    <div class="header-actions">
+      <button class="button quiet" data-action="settings">Подключения</button>
+      <button class="button quiet" id="logout-button" data-completion="logout" hidden>Выйти</button>
+    </div>
+  </header>
+  <main class="workspace">
+    <section class="search-panel" aria-labelledby="workspace-title">
+      <div class="search-heading">
+        <div>
+          <h1 id="workspace-title">Мониторинг ЖК</h1>
+          <p class="lead">Сроки строительства, обращения жителей и позиция застройщика.</p>
+        </div>
+        <button class="button quiet demo-scan" data-action="demo-scan">Попробовать без ключей</button>
+      </div>
+      <div class="search-controls">
+        <label>Где искать
+          <select id="search-region">
+            <option value="capitals">Москва, Петербург и области</option>
+            <option value="moscow">Москва и Подмосковье</option>
+            <option value="petersburg">Петербург и Ленобласть</option>
+            <option value="russia">Россия · 16 регионов</option>
+          </select>
+        </label>
+        <label class="period">Период
+          <select id="search-period">
+            <option value="month">За месяц</option>
+            <option value="fortnight">За 2 недели</option>
+          </select>
+        </label>
+        <label>Застройщик или ЖК
+          <input id="search-target" maxlength="150" placeholder="ГК Основа">
+        </label>
+        <button class="button primary" id="find-button" data-action="scan">
+          Найти объекты <span aria-hidden="true">↗</span>
+        </button>
+      </div>
+    </section>
+    <div id="scan-status" role="status" aria-live="polite"></div>
+    <section class="results" id="object-results" aria-labelledby="results-title">
+      <div class="results-heading">
+        <div>
+          <h2 id="results-title">Объекты <span id="count"></span></h2>
+          <p id="data-note"></p>
+        </div>
+        <div class="results-actions">
+          <select id="dataset" aria-label="Источник объектов">
+            <option value="web">Из интернета</option>
+            <option value="imported">Материалы агентства</option>
+            <option value="demo">Демо-примеры</option>
+          </select>
+          <button class="button quiet" data-action="all-records">Все сохранённые</button>
+          <button class="button quiet" data-action="import">Добавить Excel</button>
+        </div>
+      </div>
+      <div class="filter" role="search" aria-label="Фильтр объектов">
+        <div class="filter-field">
+          <input id="filter" type="search" aria-label="Найти в списке" placeholder="Найти в списке">
+          <span id="filter-count" role="status"></span>
+        </div>
+        <label class="sort-field">Сортировка
+          <select id="record-sort">
+            <option value="report">По статусу разбора</option>
+            <option value="card">По статусу карточки</option>
+            <option value="priority">По приоритету</option>
+          </select>
+        </label>
+        <label class="check-line">
+          <input type="checkbox" id="show-blocked">
+          <span>Показать скрытые (<span id="hidden-count">0</span>)</span>
+        </label>
+      </div>
+      <div id="records" aria-live="polite"></div>
+      <div id="pagination"></div>
+    </section>
+  </main>
+  <footer class="workspace-footer"><span>Мегаполис Интеледженс</span><span>Внутренний инструмент агентства</span></footer>
+  <dialog id="detail" aria-labelledby="detail-title"><div id="detail-content"></div></dialog>
+  <dialog id="connections" aria-labelledby="connections-title"><div id="connections-content"></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <input type="file" id="excel-file" accept=".xlsx" hidden>
+  <input type="file" id="chat-file" accept=".json" hidden>
+  <input type="file" id="registry-file" accept=".json" hidden>
+  <script src="/static/app.js"></script>
+  <script src="/static/operations.js"></script>
+  <script src="/static/completion.js"></script>
+  <script src="/static/advanced.js"></script>
+  <script src="/static/conversation.js"></script>
+  <script src="/static/brand-analytics.js"></script>
+</body>
+</html>

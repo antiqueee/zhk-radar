@@ -5,7 +5,7 @@ import re
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -18,7 +18,19 @@ from radar.web.configuration import configuration, write_secrets
 from radar.web.store import STATUSES, now
 
 LOCK = threading.Lock()
-TABS = ["Реестр", "Неделя", "Девелоперы", "Чаты", "Воронка", "Справка", "Стоп-лист", "Заметки"]
+TABS = [
+    "Реестр",
+    "Неделя",
+    "Девелоперы",
+    "Чаты",
+    "Воронка",
+    "Справка",
+    "Стоп-лист",
+    "Заметки",
+    "Паспорта",
+    "Проблемы",
+    "Покрытие",
+]
 PREFIX = "Мегаполис · "
 META = "megapolis_managed_v1"
 
@@ -81,6 +93,235 @@ def local_time(value):
         .astimezone(ZoneInfo("Europe/Moscow"))
         .strftime("%d.%m.%Y %H:%M")
     )
+
+
+def _object(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _joined(values):
+    return "\n".join(str(value) for value in values or [] if value is not None)
+
+
+def _yes_no(values, key):
+    return ("Да" if values[key] else "Нет") if key in values else ""
+
+
+def _public_url(value):
+    """Export a public page identity, never credentials or query tokens."""
+    try:
+        parts = urlsplit(value or "")
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            return ""
+        return urlunsplit((parts.scheme, parts.hostname, parts.path, "", ""))
+    except ValueError:
+        return ""
+
+
+def report_tables(store, records):
+    """Allowlisted v5 snapshots and search counters; no raw evidence or chat text."""
+    passports = [
+        [
+            "ID объекта",
+            "ЖК",
+            "Проверено",
+            "Решение",
+            "Застройщик",
+            "Юрлицо",
+            "Техзаказчик",
+            "Адрес",
+            "Статус объекта",
+            "Дата статуса",
+            "Адресат",
+            "Корпуса",
+            "Сроки ввода",
+            "Сроки передачи",
+            "Официальная карточка",
+            "Алиасы",
+        ]
+    ]
+    problems = [
+        [
+            "ID объекта",
+            "ЖК",
+            "Проблема",
+            "Тема",
+            "В профиле",
+            "Состояние",
+            "Корпуса",
+            "Свидетельств всего",
+            "Текущих за 12 месяцев",
+            "Первая дата",
+            "Последняя дата",
+            "Уровень источников",
+            "Площадки",
+            "Номера источников",
+            "Решение",
+            "Проверено",
+        ]
+    ]
+    coverage = [
+        [
+            "ID объекта",
+            "ЖК",
+            "Проверено",
+            "Решение",
+            "Найденные контуры",
+            "Контуры текущих проблем",
+            "Контуров из пяти",
+            "Свидетельств за 12 месяцев",
+            "Текущих проблем в профиле",
+            "Официальный срок найден",
+            "Позиция застройщика найдена",
+            "Чаты прочитаны",
+            "Поисковых запросов",
+            "Прочитано страниц",
+            "Попаданий в кэш",
+            "Ошибок поиска",
+        ]
+    ]
+    verdicts = {
+        "report_full": "Полный разбор",
+        "report_compact": "Компактный разбор",
+        "watch": "Наблюдение",
+        "hold": "Ручное решение",
+    }
+    statuses = {
+        "under_construction": "Строится",
+        "stalled": "Работы остановлены",
+        "commissioned": "Введён",
+        "keys_issued": "Ключи выданы",
+        "unknown": "Не подтверждён",
+    }
+    roles = {
+        "developer_active": "Застройщик",
+        "tech_customer": "Техзаказчик",
+        "fund_or_city": "Фонд или город",
+        "none": "Не подтверждён",
+    }
+    contours = {
+        "official": "Официальные",
+        "media": "СМИ",
+        "reviews": "Отзывы",
+        "communities": "Сообщества",
+        "authorities": "Ведомства",
+        "other": "Другие",
+    }
+    with store.connect() as db:
+        snapshots = {
+            row["record_id"]: json.loads(row["payload"])
+            for row in db.execute(
+                "SELECT record_id,payload FROM briefs WHERE id IN ("
+                "SELECT MAX(id) FROM briefs WHERE "
+                "json_type(payload,'$.report_qualification')='object' GROUP BY record_id)"
+            )
+        }
+        has_research = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='report_research'"
+        ).fetchone()
+        research = (
+            {
+                row["record_id"]: json.loads(row["payload"])
+                for row in db.execute("SELECT record_id,payload FROM report_research")
+            }
+            if has_research
+            else {}
+        )
+    for record in records:
+        ident = record["id"]
+        snapshot = _object(snapshots.get(ident))
+        qualification = _object(snapshot.get("report_qualification"))
+        search = _object(research.get(ident) or snapshot.get("report_research"))
+        if not qualification and not search:
+            continue
+        passport = _object(qualification.get("passport") or search.get("passport"))
+        phases = [phase for phase in passport.get("phases", []) if isinstance(phase, dict)]
+        title = passport.get("official_name") or record["name"]
+        checked = qualification.get("checked") or search.get("created_at", "")
+        if "T" in checked:
+            checked = local_time(checked)
+        verdict = verdicts.get(qualification.get("verdict"), "Ещё не квалифицирован")
+        passports.append(
+            [
+                ident,
+                title,
+                checked,
+                verdict,
+                passport.get("developer_brand") or "",
+                passport.get("developer_legal") or "",
+                passport.get("tech_customer") or "",
+                passport.get("address") or "",
+                statuses.get(passport.get("status"), "Не подтверждён"),
+                passport.get("status_date") or "",
+                roles.get(passport.get("addressee"), "Не подтверждён"),
+                _joined(p.get("name") for p in phases),
+                _joined(
+                    f"{p.get('name', '')}: {p['completion_date']}"
+                    for p in phases
+                    if p.get("completion_date")
+                ),
+                _joined(
+                    f"{p.get('name', '')}: {p['keys_date']}" for p in phases if p.get("keys_date")
+                ),
+                _public_url(passport.get("official_card_url")),
+                _joined(passport.get("aliases")),
+            ]
+        )
+        for problem in qualification.get("problem_registry", []):
+            if not isinstance(problem, dict):
+                continue
+            problems.append(
+                [
+                    ident,
+                    title,
+                    problem.get("name", ""),
+                    problem.get("topic", ""),
+                    "Да" if problem.get("in_scope") else "Нет",
+                    {"active": "Текущая", "closed": "Закрыта", "unknown": "Не подтверждено"}.get(
+                        problem.get("status"), ""
+                    ),
+                    _joined(problem.get("corpuses")),
+                    problem.get("evidence_count", 0),
+                    problem.get("active_dated_evidence_count", 0),
+                    problem.get("first_date") or "",
+                    problem.get("last_date") or "",
+                    problem.get("level") or "",
+                    _joined(problem.get("publishers")),
+                    _joined(problem.get("source_numbers")),
+                    verdict,
+                    checked,
+                ]
+            )
+        counts = _object(qualification.get("coverage"))
+        found = counts.get("contours") or sorted(
+            {
+                document["contour"]
+                for document in search.get("documents", [])
+                if isinstance(document, dict) and document.get("contour") in contours
+            }
+        )
+
+        coverage.append(
+            [
+                ident,
+                title,
+                checked,
+                verdict,
+                _joined(contours.get(c, c) for c in found),
+                _joined(contours.get(c, c) for c in counts.get("active_contours", [])),
+                len(set(found) - {"other"}),
+                counts.get("dated_evidence_12m", ""),
+                counts.get("problems_in_scope", ""),
+                _yes_no(counts, "official_deadline_found"),
+                _yes_no(counts, "developer_position_found"),
+                _yes_no(counts, "chats_read"),
+                search.get("search_calls", ""),
+                search.get("page_reads", ""),
+                search.get("cache_hits", ""),
+                len(search.get("errors", [])),
+            ]
+        )
+    return {"Паспорта": passports, "Проблемы": problems, "Покрытие": coverage}
 
 
 def tables(store):
@@ -200,6 +441,7 @@ def tables(store):
         ],
         "Стоп-лист": [["Тип", "Значение", "Причина: client/partner/refused/other", "Комментарий"]],
         "Заметки": [["Дата", "Объект", "Заметка"]],
+        **report_tables(store, records),
     }
 
 

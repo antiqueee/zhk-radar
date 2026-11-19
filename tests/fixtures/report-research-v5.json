@@ -1,0 +1,199 @@
+{
+  "research": {
+    "passport": {
+      "official_name": "ЖК Тест",
+      "aliases": [
+        "Тест"
+      ],
+      "developer_brand": "Застройщик Тест",
+      "developer_legal": "ООО Тест",
+      "developer_refs": [
+        1
+      ],
+      "tech_customer": null,
+      "address": "Москва",
+      "official_card_url": "https://наш.дом.рф/card/1",
+      "phases": [
+        {
+          "name": "Корпус 1",
+          "scope": "residential",
+          "completion_date": "2027-03-31",
+          "keys_date": null,
+          "refs": [
+            1
+          ]
+        }
+      ],
+      "status": "under_construction",
+      "status_date": "2026-11-01",
+      "status_refs": [
+        1
+      ],
+      "developer_status": "active",
+      "developer_status_date": "2026-11-01",
+      "developer_status_refs": [
+        1
+      ],
+      "addressee": "developer_active",
+      "addressee_refs": [
+        1
+      ],
+      "communities": [
+        "https://t.me/example/4"
+      ]
+    },
+    "evidence": [
+      {
+        "id": "e1",
+        "source_n": 1,
+        "date_iso": "2026-11-01",
+        "date_kind": "publication",
+        "problem_id": "delay",
+        "fact_indexes": [
+          0
+        ],
+        "in_scope": true
+      },
+      {
+        "id": "e2",
+        "source_n": 2,
+        "date_iso": "2026-11-02",
+        "date_kind": "publication",
+        "problem_id": "delay",
+        "fact_indexes": [
+          1
+        ],
+        "in_scope": true
+      },
+      {
+        "id": "e3",
+        "source_n": 3,
+        "date_iso": "2026-11-03",
+        "date_kind": "review",
+        "problem_id": "answer",
+        "fact_indexes": [
+          2
+        ],
+        "in_scope": true
+      },
+      {
+        "id": "e4",
+        "source_n": 4,
+        "date_iso": "2026-11-04",
+        "date_kind": "message",
+        "problem_id": "answer",
+        "fact_indexes": [
+          3
+        ],
+        "in_scope": true
+      }
+    ],
+    "problems": [
+      {
+        "id": "delay",
+        "name": "Перенос срока",
+        "topic": "deadlines",
+        "in_scope": true,
+        "status": "active",
+        "evidence_ids": [
+          "e1",
+          "e2"
+        ],
+        "corpuses": [
+          "Корпус 1"
+        ]
+      },
+      {
+        "id": "answer",
+        "name": "Нет прямого ответа",
+        "topic": "communication",
+        "in_scope": true,
+        "status": "active",
+        "evidence_ids": [
+          "e3",
+          "e4"
+        ],
+        "corpuses": [
+          "Корпус 1"
+        ]
+      }
+    ],
+    "stage_signs": [
+      {
+        "stage": 2,
+        "text": "Подготовка коллективного обращения",
+        "date_iso": "2026-11-04",
+        "source_n": 4,
+        "fact_indexes": [
+          3
+        ]
+      }
+    ],
+    "manual_checks": []
+  },
+  "sources": [
+    {
+      "n": 1,
+      "url": "https://наш.дом.рф/card/1",
+      "published_at": "2026-11-01",
+      "text": "Срок перенесён; идёт строительство. Срок ввода 31.03.2027. Застройщик Тест продолжает строительство объекта.",
+      "type": "карточка объекта"
+    },
+    {
+      "n": 2,
+      "url": "https://msk1.ru/story/2",
+      "published_at": "2026-11-02",
+      "text": "Дольщики обсуждают перенос",
+      "type": "публикация"
+    },
+    {
+      "n": 3,
+      "url": "https://cian.ru/reviews/3",
+      "published_at": "2026-11-03",
+      "text": "Дольщики ждут прямого ответа",
+      "type": "отзывы"
+    },
+    {
+      "n": 4,
+      "url": "https://t.me/example/4",
+      "published_at": "2026-11-04",
+      "text": "Обсуждают коллективное обращение",
+      "kind": "chat",
+      "type": "чат"
+    }
+  ],
+  "facts": [
+    {
+      "text": "Срок перенесён; идёт строительство. Срок ввода 31.03.2027. Застройщик Тест продолжает строительство объекта.",
+      "date": "2026-11-01",
+      "source_n": 1,
+      "who_says": "источник",
+      "kind": "claim",
+      "verbatim": "Срок перенесён; идёт строительство. Срок ввода 31.03.2027. Застройщик Тест продолжает строительство объекта."
+    },
+    {
+      "text": "Дольщики обсуждают перенос",
+      "date": "2026-11-02",
+      "source_n": 2,
+      "who_says": "источник",
+      "kind": "claim",
+      "verbatim": "Дольщики обсуждают перенос"
+    },
+    {
+      "text": "Дольщики ждут прямого ответа",
+      "date": "2026-11-03",
+      "source_n": 3,
+      "who_says": "источник",
+      "kind": "claim",
+      "verbatim": "Дольщики ждут прямого ответа"
+    },
+    {
+      "text": "Обсуждают коллективное обращение",
+      "date": "2026-11-04",
+      "source_n": 4,
+      "who_says": "источник",
+      "kind": "claim",
+      "verbatim": "Обсуждают коллективное обращение"
+    }
+  ]
+}

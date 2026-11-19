@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 PENDING = contextvars.ContextVar("radar_paid_call", default=None)
+# Perplexity Search API standard web results, per successful request.
+PERPLEXITY_REQUEST_USD = 0.005
 
 
 class MoneySettings(BaseModel):
@@ -56,6 +58,8 @@ def reserve(db, service, stamp):
     )
     if service in {"source-hh", "source-vk"}:
         amount = 0  # Read-only public APIs; quantity limits still apply.
+    if service in {"perplexity_search", "benchmark:perplexity"}:
+        amount = PERPLEXITY_REQUEST_USD
     spent = db.execute(
         "SELECT COALESCE(sum(COALESCE(billed_usd,reserved_usd)),0) "
         "FROM api_calls WHERE created_at>=?",

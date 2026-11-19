@@ -2,11 +2,14 @@
 
 import hashlib
 import hmac
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+REDACTION_VERSION = "calendar-quarters-v2"
 
 
 class Message(BaseModel):
@@ -39,10 +42,22 @@ def redact(text: str, names: list[str]) -> str:
     )
 
     def apartment(match):
-        # «II кв. 2026» describes a calendar quarter, not apartment 2026.
-        quarter = re.search(r"\b(?:I{1,3}|IV|[1-4])\s+$", text[: match.start()], re.I)
-        if quarter and re.fullmatch(r"кв\.?\s+(?:19|20|21)\d{2}", match[0], re.I):
-            return match[0]
+        # HTML cells may meet without spaces: «21III кв.2026IV кв.2026».
+        # Require an explicit quarter before the year; a lone apartment 2026 stays private.
+        quarter = re.search(
+            r"(?:(?<![a-z])(?:IV|III|II|I)|(?<!\w)[1-4])\s*$",
+            text[: match.start()],
+            re.I,
+        )
+        year = re.fullmatch(r"кв\.?\s*(?:19|20|21)\d{2}([а-яa-z]?)", match[0], re.I)
+        if quarter and year:
+            suffix = year[1]
+            tail = text[match.end() :]
+            # The apartment pattern may have consumed the first letter of the next cell.
+            next_quarter = re.match(r"(?:IV|III|II|I)\s*кв\.?", suffix + tail, re.I)
+            next_word = suffix and re.match(r"[а-яё]{2}", suffix + tail, re.I)
+            if not suffix or next_quarter or next_word:
+                return match[0]
         return "[квартира]"
 
     return re.sub(r"\b(?:кв\.?|квартира|квартиры)\s*№?\s*\d+[а-яa-z]?", apartment, text, flags=re.I)
@@ -180,6 +195,69 @@ def aggregates(store, record_id):
         )
         if len(examples) == 6:
             break
+    report_sources = []
+    for chat in chats:
+        selected = [m for m in messages if m["chat_id"] == chat["chat_id"] and m["text"]]
+        if not selected:
+            continue
+        selected.sort(key=lambda m: m["sent_at"])
+        breakdown, chosen = {}, []
+        for message in selected:
+            topic = message["topic"]
+            week = datetime.fromisoformat(message["sent_at"]).strftime("%G-W%V")
+            item = breakdown.setdefault(topic, {"messages": 0, "authors": set(), "weeks": {}})
+            item["messages"] += 1
+            item["authors"].add(message["author_hash"])
+            item["weeks"][week] = item["weeks"].get(week, 0) + 1
+        for topic in sorted(breakdown, key=lambda t: -breakdown[t]["messages"]):
+            relevant = [m for m in selected if m["topic"] == topic]
+            collective = [
+                m
+                for m in relevant
+                if re.search(
+                    r"подпис|коллективн|митинг|пикет|лагер|ид[её]м|собрани|акци|встреч",
+                    m["text"],
+                    re.I,
+                )
+            ]
+            candidates = [*collective, *reversed(relevant)]
+            seen_text = set()
+            for message in candidates:
+                if message["text"] in seen_text:
+                    continue
+                seen_text.add(message["text"])
+                chosen.append(
+                    {"topic": topic, "date": message["sent_at"][:10], "text": message["text"]}
+                )
+                if len(seen_text) == 3:
+                    break
+        details = {
+            topic: {**item, "authors": len(item["authors"])} for topic, item in breakdown.items()
+        }
+        content = json.dumps(
+            {
+                "chat": chat["title"],
+                "messages_30d": len(selected),
+                "first_date": selected[0]["sent_at"][:10],
+                "last_date": selected[-1]["sent_at"][:10],
+                "topics": details,
+                "quotes": chosen,
+            },
+            ensure_ascii=False,
+        )
+        report_sources.append(
+            {
+                "id": "chat-summary:" + chat["chat_id"],
+                "text": content,
+                "topics": list(breakdown),
+                "kind": "chat",
+                "title": chat["title"],
+                "url": chat_urls.get(chat["chat_id"]),
+                "contour": "communities",
+                "published_at": selected[-1]["sent_at"],
+                "count": len(selected),
+            }
+        )
     labelled = [m for m in messages if m["sentiment"] is not None]
     return {
         "record_id": record_id,
@@ -193,6 +271,7 @@ def aggregates(store, record_id):
         else None,
         "topics": sorted(topics.items(), key=lambda x: -x[1]),
         "examples": examples,
+        "report_sources": report_sources,
         "daily": sorted(daily.items()),
         "method": (
             f"Моделью размечено {model_labelled} сообщений. Остальная разметка — из выгрузки. "

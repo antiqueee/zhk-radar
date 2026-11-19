@@ -1,0 +1,111 @@
+.login-page {
+  --login-border: #dde5eb;
+  background: #eef2f5;
+}
+
+.login-page .login-shell {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: 32px clamp(16px, 5vw, 32px);
+}
+
+.login-page .login-card {
+  width: min(100%, 468px);
+  border: 1px solid var(--login-border);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 38px #173e540a;
+}
+
+.login-page .login-header,
+.login-page .login-form {
+  padding: 28px clamp(20px, 6vw, 34px);
+}
+
+.login-page .login-header {
+  border-bottom: 1px solid var(--login-border);
+}
+
+.login-page .login-brand {
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 24px;
+  font-size: clamp(15px, 4vw, 18px);
+  letter-spacing: -.25px;
+  line-height: 1.4;
+}
+
+.login-page .login-brand b {
+  color: #526473;
+  font-size: inherit;
+}
+
+.login-page .login-header h1 {
+  margin: 0;
+  color: #222a31;
+  font-size: clamp(23px, 5.4vw, 30px);
+  font-weight: 620;
+  line-height: 1.2;
+  letter-spacing: -.7px;
+}
+
+.login-page .login-form {
+  display: grid;
+  gap: 18px;
+}
+
+.login-page .login-field {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.login-page .login-field input {
+  min-height: 48px;
+  border-color: var(--login-border);
+  border-radius: 8px;
+  background: #f5f7f9;
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.login-page .login-form .button {
+  min-height: 46px;
+  margin-top: 4px;
+  background: #173e54;
+  border-color: #173e54;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.login-page .login-form .button:hover {
+  background: #102f42;
+  border-color: #102f42;
+}
+
+.login-page #login-status {
+  margin: 0;
+  color: #8b3629;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.login-page #login-status:empty {
+  margin-top: -18px;
+}
+
+@media (max-width: 480px) {
+  .login-page .login-brand span:last-child {
+    max-width: none;
+  }
+
+  .login-page .login-brand b {
+    display: inline;
+    margin: 0;
+  }
+}

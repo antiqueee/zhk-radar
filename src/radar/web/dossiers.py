@@ -6,6 +6,15 @@ import re
 import unicodedata
 from datetime import UTC, date, datetime
 
+from radar.web.record_identity import (
+    RecordResolver,
+    _developers,
+    _project_locality,
+    eis_url_id,
+    identity_scope,
+    project_name,
+    unresolved_id,
+)
 from radar.web.sources import initialize_sources, primary_text
 from radar.web.store import now
 
@@ -77,12 +86,72 @@ def supported_date(value, quote):
     return iso if re.search(pattern, quote, re.I) else None
 
 
+def _project_proof(incoming, source):
+    name = project_name(incoming["name"])
+    if not name:
+        return "", ""
+    title = source["title"]
+    proof = incoming["quote"]
+    target = f" {name} "
+    if target in f" {normalized(title)} ":
+        proof += " " + title
+    elif target not in f" {normalized(proof)} ":
+        return "", ""
+    region = source_region(incoming["region"], proof)
+    locality = _project_locality({"region": region})
+    proof_text = f" {normalized(proof)} "
+    developer = next((key for key in _developers(incoming) if f" {key} " in proof_text), "")
+    return locality or "", developer
+
+
+def _same_publication(db, resolver, incoming, source):
+    name = project_name(incoming["name"])
+    developers = _developers(incoming)
+    if not name or not developers or not any(
+        f" {name} " in f" {normalized(text)} " for text in (incoming["quote"], source["title"])
+    ):
+        return None, False
+    ids = [
+        ident for ident, row in resolver.rows.items()
+        if source["url"] in (row.get("urls") or ())
+    ]
+    if not ids:
+        return None, False
+    building = identity_scope({"building": incoming["building"]})["buildings"]
+    matching, archived = set(), set()
+    for row in db.execute(
+        "SELECT record_id,payload FROM record_signals WHERE record_id IN ("
+        + ",".join("?" for _ in ids)
+        + ") AND json_extract(payload,'$.source_url')=? AND json_extract(payload,'$.quote')=?",
+        (*ids, source["url"], incoming["quote"]),
+    ):
+        signal = json.loads(row["payload"])
+        stored = resolver.rows.get(signal.get("origin_record_id"), resolver.rows[row["record_id"]])
+        if (
+            project_name(stored.get("name")) != name
+            or not _developers(stored) & developers
+            or identity_scope({"building": signal.get("building")})["buildings"] != building
+        ):
+            continue
+        ident = row["record_id"]
+        canonical = resolver.canonical(ident)
+        if ident == canonical:
+            matching.add(ident)
+        elif canonical and resolver.rows[canonical].get("granularity") == "project":
+            archived.add(canonical)
+    if len(matching) == 1:
+        return next(iter(matching)), False
+    # A merged member can retain a source that was excluded from the canonical project.
+    return None, not matching and bool(archived)
+
+
 def persist_findings(store, findings, documents, dataset="web"):
     initialize_sources(store)
     added, signals_added, discarded, dates_discarded = 0, 0, 0, 0
     accepted_ids = set()
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        resolver = RecordResolver(db, dataset)
         for finding in findings:
             if finding.source_index >= len(documents):
                 discarded += 1
@@ -111,7 +180,9 @@ def persist_findings(store, findings, documents, dataset="web"):
             if finding.building and (
                 finding.building.casefold() not in finding.quote.casefold()
                 or not re.match(
-                    r"^(корпус|корп\.?|дом|строение|стр\.?)\s+\w", finding.building, re.I
+                    r"^(?:корпус|корп|дом|строение|стр)(?:\.\s*|\s+)(?:[№#]\s*)?\w",
+                    finding.building,
+                    re.I,
                 )
             ):
                 # Unproven building must not get attributed to a specific house.
@@ -121,8 +192,38 @@ def persist_findings(store, findings, documents, dataset="web"):
             finding = finding.model_copy(update={"region": source_region(finding.region, text)})
             event_date = supported_date(finding.event_date, finding.quote)
             dates_discarded += bool(finding.event_date and not event_date)
-            ident = ("demo-web-" if dataset == "demo" else "web-") + object_key(
+            incoming = finding.model_dump()
+            base = ("demo-web-" if dataset == "demo" else "web-") + object_key(
                 finding, source["url"]
+            )
+            resolution = resolver.resolve(incoming, source["url"], fallback_id=base)
+            ident, archived = _same_publication(db, resolver, incoming, source)
+            if archived and resolution.reason != "confirmed_house":
+                discarded += 1
+                continue
+            if resolution.reason == "confirmed_house" or not ident:
+                ident = resolution.record_id
+            project_locality = None
+            if dataset == "web" and finding.building and not ident:
+                locality, developer = _project_proof(incoming, source)
+                if locality and developer:
+                    parent = resolver.resolve_project({**incoming, "project_locality": locality})
+                    ident = parent.record_id
+                    if ident:
+                        project_locality = locality
+                    if parent.candidates and not resolution.candidates:
+                        resolution = parent
+                    if (
+                        not ident and not resolution.candidates and not eis_url_id(source["url"])
+                        and project_name(finding.name) == name
+                    ):
+                        digest = hashlib.sha256(json.dumps(
+                            ["project", name, locality, developer], ensure_ascii=False
+                        ).encode()).hexdigest()[:24]
+                        ident = "web-" + digest
+                        project_locality = locality
+            ident = ident or (
+                unresolved_id(base, incoming, source["url"]) if resolution.candidates else base
             )
             accepted_ids.add(ident)
             old = db.execute("SELECT payload,revision FROM records WHERE id=?", (ident,)).fetchone()
@@ -137,7 +238,7 @@ def persist_findings(store, findings, documents, dataset="web"):
                     developer=finding.developer,
                     region=finding.region or "Не установлен",
                     summary=finding.summary,
-                    building=finding.building,
+                    building=None if project_locality else finding.building,
                     assessment=None,
                     urls=[],
                     claims={},
@@ -151,12 +252,25 @@ def persist_findings(store, findings, documents, dataset="web"):
                     granularity="building" if finding.building else "complex",
                     eisgs_id_hints=[],
                     first_seen_at=now(),
+                    identity_scope=(
+                        {"phases": [], "buildings": []} if project_locality else
+                        identity_scope(incoming)
+                    ),
                 )
+                if resolution.candidates:
+                    payload["possible_duplicates"] = list(resolution.candidates)
+                    payload["duplicate_check"] = resolution.reason
+            if project_locality:
+                payload["granularity"] = "project"
+                payload.setdefault("project_locality", project_locality)
             payload["urls"] = list(dict.fromkeys([*payload["urls"], source["url"]]))
             payload["last_seen_at"] = now()
+            scoped_project = payload.get("granularity") == "project"
+            scope = identity_scope({"building": finding.building})["buildings"]
             signal_id = hashlib.sha256(
                 json.dumps(
-                    [ident, source["url"], finding.quote, finding.event_type, event_date],
+                    [ident, source["url"], finding.quote, finding.event_type, event_date]
+                    + ([scope] if scoped_project and scope else []),
                     ensure_ascii=False,
                 ).encode()
             ).hexdigest()
@@ -174,16 +288,23 @@ def persist_findings(store, findings, documents, dataset="web"):
                 building=finding.building,
                 limitation="Цитата есть в тексте. Утверждение источника требует проверки.",
             )
-            previous = db.execute(
-                "SELECT id FROM record_signals WHERE record_id=? "
+            if source.get("search_provider") == "perplexity":
+                signal["search_provider"] = "perplexity"
+            previous_rows = db.execute(
+                "SELECT json_extract(payload,'$.building') AS building FROM record_signals "
+                "WHERE record_id=? "
                 "AND json_extract(payload,'$.source_url')=? "
                 "AND json_extract(payload,'$.quote')=? "
                 "AND json_extract(payload,'$.event_type')=? "
-                "AND json_extract(payload,'$.event_date') IS ? LIMIT 1",
+                "AND json_extract(payload,'$.event_date') IS ?",
                 (ident, source["url"], finding.quote, finding.event_type, event_date),
-            ).fetchone()
+            )
+            previous = any(
+                not scoped_project or identity_scope({"building": row["building"]})["buildings"]
+                == scope for row in previous_rows
+            )
             count = 0
-            if previous is None:
+            if not previous:
                 count = db.execute(
                     "INSERT OR IGNORE INTO record_signals VALUES(?,?,?,?,?)",
                     (
@@ -219,6 +340,7 @@ def persist_findings(store, findings, documents, dataset="web"):
                     ),
                 )
                 added += 1
+            resolver.add(ident, payload)
             if count:
                 db.execute(
                     "INSERT OR IGNORE INTO evidence"

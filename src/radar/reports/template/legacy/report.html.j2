@@ -1,0 +1,373 @@
+{#- Мегаполис Интеллидженс · разбор объекта. Данные: см. sample/*.json и раздел «Контракт данных» в INSTRUCTION.md -#}
+{%- macro refs(list) -%}
+  {%- for r in list or [] -%}<a class="ref" href="{{ src_url[r] }}">{{ r }}</a>{%- endfor -%}
+{%- endmacro -%}
+{%- macro header(section) -%}
+  <header class="hdr">
+    <div class="hdr__brand">
+      <img src="assets/logo-mark-teal.png" alt="">
+      <span>{{ meta.product }}</span>
+    </div>
+    <div class="hdr__ctx"><span>{{ object.name }}</span><b>{{ section }}</b></div>
+  </header>
+{%- endmacro -%}
+{%- macro footer(n) -%}
+  <footer class="ftr">
+    <span>{{ meta.disclaimer }}</span>
+    <span>{{ meta.date }}</span>
+    <span class="ftr__pg">{{ n }} / {{ total_pages }}</span>
+  </footer>
+{%- endmacro -%}
+{%- set compact = meta.layout == 'compact' -%}
+{%- set total_pages = 3 if compact else 4 -%}
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<base href="{{ base_url }}">
+<title>{{ meta.doc_type }} · {{ object.name }}</title>
+<link rel="stylesheet" href="template/legacy/report.css">
+</head>
+<body class="{{ 'is-compact' if compact else 'is-full' }}">
+
+{# ============================== 1 · СИТУАЦИЯ ============================== #}
+<section class="page page--cover" data-page="situation">
+  <div class="hero">
+    <div class="hero__map"></div>
+    <div class="hero__top">
+      <div class="hero__logo">
+        <img class="hero__mark" src="assets/logo-mark-white.png" alt="">
+        <img class="hero__word" src="assets/logo-word-white.png" alt="Мегаполис">
+      </div>
+      <div class="hero__doc">{{ meta.doc_type }}<i></i>{{ meta.date }}</div>
+    </div>
+    {%- set nlen = object.name | length %}
+    <div class="hero__title {{ 'hero__title--l' if nlen > 46 else ('hero__title--m' if nlen > 30 else '') }}">
+      <h1>{{ object.name }}</h1>
+      <p>{{ object.developer }}<i></i>{{ object.city }}</p>
+    </div>
+    <div class="hero__chips">
+      <div class="chip chip--{{ priority.level }}">
+        <span class="chip__k">Приоритет</span><span class="chip__v">{{ priority.label }}</span>
+      </div>
+      <div class="chip">
+        <span class="chip__k">Стадия</span>
+        <span class="chip__v">{{ diagnosis.stage.stages[diagnosis.stage.current - 1].name }} · {{ diagnosis.stage.current }} из 4</span>
+      </div>
+      <div class="chip">
+        <span class="chip__k">Основания</span><span class="chip__v">{{ evidence_summary }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="lead-row">
+      <div class="lead">
+        <div class="eyebrow">Ситуация</div>
+        <p>{{ situation.lead }}</p>
+      </div>
+      <div class="score">
+        <div class="eyebrow">Почему в приоритете</div>
+        {% for c in priority.criteria %}
+        <div class="score__row">
+          <span class="score__n">{{ c.name }}</span>
+          <span class="score__d">{% for i in range(3) %}<i class="{{ 'on' if i < c.score }}"></i>{% endfor %}</span>
+          <span class="score__w">{{ c.why }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="facts">
+      {% for f in situation.facts %}
+      <div class="fact fact--{{ f.tone }}">
+        <div class="fact__v">{{ f.value }}</div>
+        <div class="fact__l">{{ f.label }}{{ refs(f.refs) }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="block">
+      <h2>Хронология обещаний и фактов</h2>
+      <div class="tl" style="--n: {{ situation.timeline | length }}">
+        {% for e in situation.timeline %}
+        <div class="tl__e tl__e--{{ e.tone }}">
+          <div class="tl__d">{{ e.date }}</div>
+          <div class="tl__dot"></div>
+          <div class="tl__t">{{ e.text }}{{ refs(e.refs) }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="versus">
+      <div class="voice voice--buyers">
+        <div class="voice__h"><h2>Что говорят покупатели</h2><span class="tag">{{ situation.buyers.status }}</span></div>
+        {% for q in situation.buyers.quotes %}
+        <blockquote>
+          <p>{{ q.text }}{{ refs(q.refs) }}</p>
+          <cite>{{ q.attribution }}</cite>
+        </blockquote>
+        {% endfor %}
+        {% if situation.buyers.note %}<p class="voice__note">{{ situation.buyers.note }}</p>{% endif %}
+      </div>
+      <div class="versus__gap"><span>≠</span></div>
+      <div class="voice voice--company">
+        <div class="voice__h"><h2>Что говорит компания</h2><span class="tag tag--alert">{{ situation.company.status }}</span></div>
+        {% for q in situation.company.points %}
+        <p class="voice__p">{{ q.text }}{{ refs(q.refs) }}</p>
+        {% endfor %}
+        <div class="voice__gap">{{ situation.gap }}</div>
+      </div>
+    </div>
+
+    {% if compact %}
+    {# Компактный вариант: стадия и источники переезжают на первую страницу, страница «Диагноз» не выводится #}
+    <div class="block block--stage-mini">
+      <h2>Стадия конфликта <span class="h2__note">{{ diagnosis.stage.confidence }}</span></h2>
+      <div class="stage">
+        {% for s in diagnosis.stage.stages %}
+        <div class="stage__s {{ 'is-past' if s.n < diagnosis.stage.current }} {{ 'is-now' if s.n == diagnosis.stage.current }}">
+          <div class="stage__n">{{ s.n }}</div>
+          <div class="stage__name">{{ s.name }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="sources sources--mini">
+      {% for s in diagnosis.sources %}
+      <span><b>{{ s.n }}</b> {{ s.publisher }} · {{ s.date }} · <a href="{{ s.url or '#' }}">{{ s.title }}</a></span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {{ footer(1) }}
+</section>
+
+{# ============================== 2 · ДИАГНОЗ ============================== #}
+{% if not compact %}
+<section class="page" data-page="diagnosis">
+  {{ header('Диагноз') }}
+  <div class="body">
+    <div class="ttl">
+      <h1>Диагноз</h1>
+      <p>{{ diagnosis.subtitle }}</p>
+    </div>
+
+    <div class="block">
+      <h2>Стадия конфликта <span class="h2__note">{{ diagnosis.stage.confidence }}</span></h2>
+      <div class="stage">
+        {% for s in diagnosis.stage.stages %}
+        <div class="stage__s {{ 'is-past' if s.n < diagnosis.stage.current }} {{ 'is-now' if s.n == diagnosis.stage.current }}">
+          <div class="stage__n">{{ s.n }}</div>
+          <div class="stage__name">{{ s.name }}</div>
+          <div class="stage__desc">{{ s.desc }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="stage-ev">
+        <div class="stage-ev__signs">
+          <div class="eyebrow">Признаки стадии</div>
+          <ul class="marks">
+            {% for g in diagnosis.stage.signs %}
+            <li class="{{ 'yes' if g.confirmed else 'no' }}">{{ g.text }}{{ refs(g.refs) }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        <div class="stage-ev__next">
+          <div class="eyebrow eyebrow--alert">Что дальше</div>
+          <p>{{ diagnosis.stage.forecast }}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Причины и драйверы</h2>
+      <div class="drivers">
+        {% for d in diagnosis.drivers %}
+        <div class="driver">
+          <div class="driver__n">{{ '%02d' % loop.index }}</div>
+          <div class="driver__b">
+            <h3>{{ d.title }}</h3>
+            <p>{{ d.text }}{{ refs(d.refs) }}</p>
+          </div>
+          <div class="driver__c"><span class="conf conf--{{ d.confidence }}">{{ d.confidence_label }}</span></div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="cols cols--2">
+      <div class="block">
+        <h2>Кого затрагивает</h2>
+        <dl class="kv">
+          {% for s in diagnosis.stakeholders %}
+          <div><dt>{{ s.who }}</dt><dd>{{ s.cares }}</dd></div>
+          {% endfor %}
+        </dl>
+      </div>
+      <div class="block">
+        <h2>Чего мы пока не знаем</h2>
+        <dl class="kv kv--todo">
+          {% for u in diagnosis.unknowns %}
+          <div><dt>{{ u.what }}</dt><dd>{{ u.how }}</dd></div>
+          {% endfor %}
+        </dl>
+      </div>
+    </div>
+
+    <div class="sources">
+      <h2>Источники</h2>
+      <ol>
+        {% for s in diagnosis.sources %}
+        <li><b>{{ s.n }}</b><span class="sources__t"><a href="{{ s.url or '#' }}">{{ s.title }}</a></span><span class="sources__m">{{ s.publisher }} · {{ s.date }} · {{ s.type }}</span></li>
+        {% endfor %}
+      </ol>
+      {% if diagnosis.sources_note %}<p>{{ diagnosis.sources_note }}</p>{% endif %}
+    </div>
+  </div>
+  {{ footer(2) }}
+</section>
+{% endif %}
+
+{# ============================== 3 · ПРЕДЛОЖЕНИЕ ============================== #}
+<section class="page" data-page="offer">
+  {{ header('Предложение') }}
+  <div class="body">
+    <div class="ttl">
+      <h1>Что предложить девелоперу</h1>
+    </div>
+
+    <div class="usp">
+      <div class="usp__map"></div>
+      <div class="eyebrow">УТП для объекта</div>
+      <p class="usp__t">{{ offer.usp }}</p>
+      <p class="usp__n">{{ offer.usp_note }}</p>
+    </div>
+
+    <div class="block">
+      <h2>Почему сейчас</h2>
+      <div class="why">
+        {% for w in offer.why_now %}
+        <div class="why__i">
+          <h3>{{ w.title }}</h3>
+          <p>{{ w.text }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Три решения под боли объекта</h2>
+      <div class="mods">
+        {% for m in offer.modules %}
+        <article class="mod">
+          <div class="mod__id">
+            <div class="mod__n">{{ '%02d' % loop.index }}</div>
+            <h3>{{ m.name }}</h3>
+            <div class="mod__svc">{{ m.service }}</div>
+          </div>
+          <div class="mod__why">
+            <div class="mod__pain"><span class="eyebrow eyebrow--alert">Боль</span><p>{{ m.pain }}{{ refs(m.pain_refs) }}</p></div>
+            <div class="mod__sol"><span class="eyebrow">Решение</span><p>{{ m.solution }}</p></div>
+            <div class="mod__out"><span class="eyebrow">Результат</span><p>{{ m.outcome }}</p></div>
+          </div>
+          <div class="mod__do">
+            <span class="eyebrow">Первые 30 дней</span>
+            <ul>
+              {% for s in m.steps %}<li>{{ s }}</li>{% endfor %}
+            </ul>
+            <div class="mod__kpi"><span>Метрика</span>{{ m.metric }}</div>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </div>
+
+  </div>
+  {{ footer(2 if compact else 3) }}
+</section>
+
+{# ============================== 4 · ЗАХОД ============================== #}
+<section class="page" data-page="approach">
+  {{ header('Первый шаг') }}
+  <div class="body">
+    <div class="ttl">
+      <h1>Как зайти к девелоперу</h1>
+    </div>
+
+    <div class="cols cols--msg">
+      <div class="msg">
+        <div class="msg__h"><h2>Первое сообщение</h2><span class="tag">Черновик</span></div>
+        <div class="msg__body">
+          <p class="msg__hi">{{ approach.message.greeting }}</p>
+          {% for p in approach.message.paragraphs %}<p>{{ p }}</p>{% endfor %}
+        </div>
+        <ul class="msg__tips">
+          {% for t in approach.message.tips %}<li>{{ t }}</li>{% endfor %}
+        </ul>
+      </div>
+      <div class="who">
+        <h2>Кому адресовать</h2>
+        {% for c in approach.contacts %}
+        <div class="who__i">
+          <div class="who__n">{{ loop.index }}</div>
+          <div>
+            <h3>{{ c.role }}</h3>
+            <p><span>Болит:</span> {{ c.pain }}</p>
+            <p><span>Заход:</span> {{ c.angle }}</p>
+          </div>
+        </div>
+        {% endfor %}
+        <p class="who__note">{{ approach.contacts_note }}</p>
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Возражения и ответы</h2>
+      <div class="obj">
+        {% for o in approach.objections %}
+        <div class="obj__i">
+          <div class="obj__q">«{{ o.q }}»</div>
+          <div class="obj__a">{{ o.a }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="pilot">
+      <div class="pilot__top">
+        <h2>{{ approach.pilot.title }}</h2>
+        <div class="pilot__c">
+          {% for c in approach.pilot.columns %}
+          <div>
+            <div class="eyebrow">{{ c.name }}</div>
+            <ul>{% for i in c.points %}<li>{{ i }}</li>{% endfor %}</ul>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="road">
+        {% for r in approach.pilot.roadmap %}
+        <div class="road__s">
+          <div class="road__w">{{ r.when }}</div>
+          <div class="road__b"><b>{{ r.name }}.</b> {{ r.text }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Проверить перед контактом</h2>
+      <ul class="check">
+        {% for c in approach.checklist %}<li>{{ c }}</li>{% endfor %}
+      </ul>
+    </div>
+
+    <p class="caveat">{{ approach.caveat }}</p>
+  </div>
+  {{ footer(3 if compact else 4) }}
+</section>
+
+</body>
+</html>

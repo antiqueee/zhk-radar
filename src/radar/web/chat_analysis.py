@@ -14,6 +14,7 @@ from radar.briefs.offers import load_offers
 from radar.web.chats import initialize
 from radar.web.configuration import configuration, model_config, model_options
 from radar.web.discovery import call_json
+from radar.web.model_gateway import routed_client
 from radar.web.model_output import parse_model_json
 from radar.web.operations import reserve_call
 from radar.web.store import now
@@ -143,7 +144,8 @@ def analyze(
         topics = {
             t for o in load_offers(store.root / "config/offers.yaml").offers for t in o.pain_topics
         }
-        client = client or httpx.Client(timeout=httpx.Timeout(90, connect=15))
+        if client is None:
+            client = routed_client(cfg, timeout=httpx.Timeout(90, connect=15))
         done, cached, calls, rejected = 0, 0, 0, 0
         run = run_id or uuid4().hex
         for offset in range(0, min(len(messages), 120), 60):

@@ -46,8 +46,15 @@ def projection(payload, allowed_cases):
     products = []
     selected_cases = {i for p in payload["report"]["products"] for i in p.get("case_ids", [])}
     for product in payload["report"]["products"]:
-        tasks, result, measurement, _ = PLAYBOOKS[product["code"]]
+        if payload.get("report_v2"):
+            tasks, result, measurement = product["tasks"], product["result"], product["measurement"]
+        else:
+            tasks, result, measurement, _ = PLAYBOOKS[product["code"]]
         proposed = [*product["tasks"], product["result"], product["measurement"]]
+        if payload.get("report_v2") and any(
+            overlaps(t, forbidden) or redact(t, []) != t for t in proposed
+        ):
+            raise ValueError("Клиентская версия требует удаления цитат жителей и контактов")
         # Authored text may quote a resident despite instructions. Use vetted playbook then.
         if not any(overlaps(t, forbidden) or redact(t, []) != t for t in proposed):
             tasks, result, measurement = product["tasks"], product["result"], product["measurement"]
@@ -200,6 +207,9 @@ def render_client(value, version=1, draft=True):
 
 def export(store, ident, draft=True):
     brief = review.get_brief(store, ident)
+    from radar.web.report_status import require_download
+
+    require_download(brief["payload"])
     if stoplist.blocked(store, store.get(brief["record_id"])):
         raise ValueError("Объект в стоп-листе")
     if not draft:
@@ -207,5 +217,14 @@ def export(store, ident, draft=True):
             raise ValueError("Сначала аналитик должен одобрить именно эту версию")
         if not current(store, brief):
             raise ValueError("Данные изменились. Обновите отчёт и проверьте новую версию")
+    report = brief["payload"].get("report_v2") or {}
+    schema_version = (report.get("meta") or {}).get("schema_version")
+    if schema_version in {"5", "8"}:
+        from radar.web.pdf import render_pdf
+
+        saved = store.root / "data/local/report-pdfs" / f"{ident}.pdf"
+        if schema_version == "8":
+            return render_pdf(brief["payload"], cache_path=saved)
+        return saved.read_bytes() if saved.exists() else render_pdf(brief["payload"])
     allowed = {c["id"] for c in cases.entries(store) if c["approved"] and c["client_use"]}
     return render_client(projection(brief["payload"], allowed), brief["version"], draft)

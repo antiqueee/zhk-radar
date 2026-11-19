@@ -1,0 +1,30 @@
+# Merge with compose.server.yaml; the proxy shares only radar's loopback namespace.
+services:
+  openrouter-egress:
+    image: ${RADAR_EGRESS_IMAGE:-megapolis-radar:latest}
+    container_name: megapolis-openrouter-egress
+    entrypoint: /usr/local/bin/megapolis-xray
+    command: [run, -config, /etc/megapolis-egress.json]
+    user: '10001:10001'
+    network_mode: service:radar
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${RADAR_EGRESS_RUNTIME_DIR:-/opt/megapolis/egress}/xray:/usr/local/bin/megapolis-xray:ro
+      - ${RADAR_EGRESS_RUNTIME_DIR:-/opt/megapolis/egress}/config.json:/etc/megapolis-egress.json:ro
+    depends_on:
+      radar:
+        condition: service_started
+        restart: true
+    healthcheck:
+      test: [CMD, python, -c, 'import socket; socket.create_connection(("127.0.0.1", 10890), 2).close()']
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      options:
+        max-size: '2m'
+        max-file: '2'

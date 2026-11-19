@@ -27,6 +27,7 @@ class OperationsSettings(BaseModel):
     screen_model_calls: int = Field(default=5, ge=0, le=5)
     sync_registry: bool = False
     sync_sheets: bool = False
+    limits_enabled: bool = True
     per_run: int = Field(default=120, ge=1, le=200)
     daily: int = Field(default=360, ge=1, le=1000)
     monthly: int = Field(default=2000, ge=1, le=10000)
@@ -93,6 +94,8 @@ class BudgetExceeded(ValueError):
 
 def remaining_calls(store, run_id):
     cfg = settings(store)
+    if not cfg["limits_enabled"]:
+        return float("inf")
     stamp = now()
     with store.connect() as db:
         used = [
@@ -137,7 +140,7 @@ def reserve_call(store, run_id, service):
             ).fetchone()[0],
         }
         for period, count in counters.items():
-            if count >= cfg[period]:
+            if cfg.get("limits_enabled", True) and count >= cfg[period]:
                 raise BudgetExceeded(
                     "Достигнут лимит платных запросов: "
                     + {"per_run": "на запуск", "daily": "за сутки UTC", "monthly": "за месяц UTC"}[

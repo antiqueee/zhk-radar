@@ -76,6 +76,8 @@ def install(app, store):
 
     @app.get("/api/records/{ident}/brief-history")
     def brief_history(ident: str):
+        from radar.web.report_status import internal_download_status
+
         store.get(ident)
         with store.connect() as db:
             rows = list(
@@ -91,6 +93,8 @@ def install(app, store):
                 "version": r["version"],
                 "created_at": r["created_at"],
                 "author": json.loads(r["payload"]).get("author"),
+                **internal_download_status(json.loads(r["payload"])),
+                "qualification": json.loads(r["payload"]).get("report_qualification"),
                 "reviews": review.history(store, r["id"]),
             }
             for r in rows

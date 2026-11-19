@@ -20,7 +20,9 @@ from radar.web.configuration import (
     raw_model_config,
 )
 from radar.web.discovery import SearchDocument, call_json, extract, yandex
+from radar.web.model_gateway import routed_client
 from radar.web.operations import BudgetExceeded, reserve_call
+from radar.web.perplexity_search import search_perplexity
 from radar.web.sources import canonical_url
 from radar.web.store import now
 
@@ -82,20 +84,7 @@ def search_provider(client, cfg, provider, query):
     if provider == "yandex":
         return yandex(client, cfg, query, "month")
     if provider == "perplexity":
-        data = call_json(
-            client,
-            "https://api.perplexity.ai/search",
-            {"Authorization": "Bearer " + cfg["PERPLEXITY_API_KEY"]},
-            {
-                "query": query,
-                "max_results": 10,
-                "search_language_filter": ["ru"],
-                "country": "RU",
-                "search_recency_filter": "month",
-            },
-            "Perplexity Search",
-        )
-        rows = data.get("results", [])
+        return search_perplexity(client, cfg, query, "month")
     else:
         data = call_json(
             client,
@@ -280,7 +269,7 @@ class BenchmarkRunner:
         cfg = configuration(self.store.root)
         models = model_config(self.store.root)
         try:
-            with httpx.Client(timeout=httpx.Timeout(90, connect=15)) as client:
+            with routed_client(cfg, timeout=httpx.Timeout(90, connect=15)) as client:
                 for query in request.queries:
                     for provider in request.providers:
                         started = time.monotonic()

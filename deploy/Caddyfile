@@ -6,3 +6,7 @@
     reverse_proxy radar:8765
     header Strict-Transport-Security "max-age=31536000"
 }
+
+www.{$RADAR_DOMAIN} {
+    redir https://{$RADAR_DOMAIN}{uri} permanent
+}

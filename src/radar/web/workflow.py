@@ -6,8 +6,8 @@ import threading
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
-import httpx
 import yaml
 
 from radar.domain import Evidence, House, Sales, Snapshot
@@ -16,6 +16,7 @@ from radar.web import registry, stoplist
 from radar.web.configuration import configuration, model_config
 from radar.web.discovery import Findings, ScanCancelled, extract, yandex
 from radar.web.dossiers import dossier, normalized, persist_findings
+from radar.web.model_gateway import routed_client
 from radar.web.operations import BudgetExceeded, reserve_call
 from radar.web.sources import (
     Page,
@@ -43,7 +44,18 @@ def initialize(store):
         """)
 
 
-CACHE_LOCK = threading.RLock()
+_CACHE_LOCKS = WeakValueDictionary()
+_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_lock(store, digest):
+    key = (store.path.resolve(), digest)
+    with _CACHE_LOCKS_GUARD:
+        return _CACHE_LOCKS.setdefault(key, threading.RLock())
+
+
+def _cache_digest(key):
+    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
 
 
 def latest_research(store, ident):
@@ -60,13 +72,30 @@ def latest_research(store, ident):
 
 
 def cached(store, key, operation, run_id, service):
-    with CACHE_LOCK:
-        return _cached(store, key, operation, run_id, service)
+    from radar.web.tasks import check_task_cancelled
+
+    check_task_cancelled()
+    digest = _cache_digest(key)
+    lock = _cache_lock(store, digest)
+    while not lock.acquire(timeout=0.25):
+        check_task_cancelled()
+    try:
+        check_task_cancelled()
+        return _cached(store, digest, operation, run_id, service)
+    finally:
+        lock.release()
 
 
-def _cached(store, key, operation, run_id, service):
+def discard_cached(store, key, value):
+    digest = _cache_digest(key)
+    with _cache_lock(store, digest), store.connect() as db:
+        db.execute(
+            "DELETE FROM workflow_cache WHERE key=? AND payload=?", (digest, json.dumps(value))
+        )
+
+
+def _cached(store, digest, operation, run_id, service):
     initialize(store)
-    digest = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
     with store.connect() as db:
         row = db.execute("SELECT payload FROM workflow_cache WHERE key=?", (digest,)).fetchone()
     if row:
@@ -325,7 +354,7 @@ def research(
     if depth == "cluster":
         questions = questions[:2]
     owns = client is None
-    client = client or httpx.Client(timeout=90)
+    client = client or routed_client(cfg, timeout=90)
     documents, errors, completed_questions = [], [], []
     cache_hits = 0
     try:
@@ -362,6 +391,9 @@ def research(
                 findings = Findings.model_validate(result)
                 # Never force facts from a different location or building onto this record.
                 persisted = persist_findings(store, findings.objects, documents, "web")
+                from radar.web.brand_analytics import link_saved_messages
+
+                link_saved_messages(store, persisted["record_ids"])
             except ValueError as exc:
                 errors.append({"stage": "extract", "detail": str(exc)})
         from radar.web.research_answers import Answers, extract_answers, validate_answers
@@ -438,7 +470,8 @@ def complete_scan(
 ):
     ids = list(result["record_ids"])
     regions = set(result.get("coverage", {}).get("regions", []))
-    initial = rank(store, ids)
+    local_only = set(result.get("brand_analytics_only_ids", []))
+    initial = rank(store, [ident for ident in ids if ident not in local_only])
     from radar.web.screening import screen
 
     # Missing date/score is a reason to investigate, not to skip chats entirely.
@@ -556,10 +589,13 @@ def complete_scan(
     selected = [c["record_id"] for c in ordered if not c["excluded"] and c["needs_research"]][
         :shortlist
     ]
+    from radar.web.brand_analytics import search_summary
+
     return {
         **result,
         "record_ids": ids,
         "found": len(ids),
+        "brand_analytics": search_summary(store, ids),
         "signals_added": result.get("signals_added", 0)
         + sum(r.get("signals_added", 0) for r in enriched),
         "rankings": ordered,

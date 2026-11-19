@@ -80,7 +80,26 @@ class Route(Flowable):
                 c.line(x + self.cell + 10, y - 3, x + self.cell + 13, y)
 
 
-def render_pdf(brief: dict) -> bytes:
+def render_pdf(brief: dict, *, cache_path: Path | None = None) -> bytes:
+    from radar.web.report_status import require_download
+
+    require_download(brief)
+    if brief.get("report_v2"):
+        from radar.reports.render import pdf_bytes
+
+        if brief["report_v2"].get("meta", {}).get("schema_version") == "8":
+            if cache_path is not None:
+                from radar.reports.render import download_v8_pdf
+
+                return download_v8_pdf(brief["report_v2"], cache_path)
+            from radar.reports.schema_v8 import Report
+        elif brief["report_v2"].get("meta", {}).get("schema_version") == "5":
+            from radar.reports.schema_v5 import Report
+        else:
+            from radar.reports.schema import Report
+
+        return pdf_bytes(Report.model_validate(brief["report_v2"]).model_dump())
+    # Immutable historical reports and explicit offline demo keep their original format.
     from radar.web.executive_pdf import render
 
     return render(brief)

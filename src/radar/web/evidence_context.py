@@ -6,6 +6,37 @@ from radar.web.chats import redact
 
 def sources_for(payload):
     sources = {}
+    documents = (payload.get("report_research") or {}).get("documents", [])
+    for document in [*documents, *payload.get("brand_analytics_documents", [])]:
+        if not document.get("text"):
+            continue
+        ident = document["source_id"]
+        if ident in sources:
+            continue
+        sources[ident] = {
+            "id": ident,
+            "title": document.get("title", ""),
+            "text": document["text"],
+            "topics": [],
+            "kind": document.get("source_kind", "page"),
+            "url": document["url"],
+            "published_at": document.get("published_at"),
+            "checked_at": document.get("checked_at"),
+            "contour": document.get("contour", "other"),
+            **({"origin": document["origin"]} if document.get("origin") else {}),
+            **(
+                {
+                    "messages": document["messages"],
+                    "count": len(document["messages"]),
+                    "message_urls": [message["url"] for message in document["messages"]],
+                    "message_dates": [
+                        message["date"] for message in document["messages"] if message.get("date")
+                    ],
+                }
+                if document.get("source_kind") == "chat" and document.get("messages")
+                else {}
+            ),
+        }
     for signal in payload.get("dossier", {}).get("signals", []):
         ident = signal["source_id"]
         if ident not in sources:
@@ -53,7 +84,11 @@ def sources_for(payload):
             "topics": [e["topic"]],
             "kind": "chat",
             "url": e.get("url"),
+            "published_at": e.get("sent_at"),
+            "title": e.get("title", "Чат дольщиков"),
         }
+    for chat in (payload.get("chat_stats") or {}).get("report_sources", []):
+        sources[chat["id"]] = chat
     for source in sources.values():
         source["topics"] = sorted(set(source["topics"]) | text_topics(source["text"]))
     return list(sources.values())

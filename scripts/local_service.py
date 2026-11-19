@@ -95,6 +95,14 @@ def main():
             result = launchctl("bootout", SERVICE)
             if result.returncode:
                 raise RuntimeError("Не удалось остановить службу: " + result.stderr.strip())
+            # bootout can return before the old process releases its listener.
+            # A following start must not mistake that process for the new one.
+            for _ in range(60):
+                if launchctl("print", SERVICE).returncode != 0 and not healthy():
+                    break
+                time.sleep(0.25)
+            else:
+                raise RuntimeError("Служба ещё завершает работу. Повторите запуск после остановки.")
         if args.action == "uninstall":
             PLIST.unlink(missing_ok=True)
         print("Служба остановлена" if args.action == "stop" else "Автозапуск удалён")

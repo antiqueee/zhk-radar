@@ -7,7 +7,6 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from radar.web import (
-    author,
     automation,
     cases,
     chat_workflow,
@@ -20,6 +19,7 @@ from radar.web import (
     screening,
     workflow,
 )
+from radar.web import report_author as author
 from radar.web.tasks import TaskRunner
 
 
@@ -46,7 +46,9 @@ def install(app, store):
             "conversation": lambda ident, run: conversation.answer(store, ident, run),
             "extra_sources": lambda ident, run: extra_sources.collect(store, ident, run),
             "research": lambda ident, run: workflow.research(store, ident, run),
-            "author": lambda ident, run: author.generate(store, ident, run),
+            "author": lambda ident, run: author.generate(
+                store, ident, run, telegram=app.state.telegram
+            ),
             "chat_discovery": lambda ident, run: chat_workflow.discover_chats(store, ident, run),
         },
     )
@@ -68,9 +70,21 @@ def install(app, store):
     def latest():
         return tasks.get()
 
+    @app.get("/api/records/{ident}/report-task")
+    def report_task(ident: str):
+        return tasks.latest_report(ident)
+
+    @app.get("/api/records/{ident}/task")
+    def object_task(ident: str):
+        return tasks.latest_for_record(ident)
+
     @app.get("/api/tasks/{ident}")
     def status(ident: str):
         return tasks.get(ident)
+
+    @app.post("/api/tasks/{ident}/cancel", status_code=202)
+    def cancel_task(ident: str):
+        return tasks.cancel(ident)
 
     @app.get("/api/records/{ident}/intelligence")
     def intelligence(ident: str):

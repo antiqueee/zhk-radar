@@ -4,8 +4,12 @@ import base64
 import hashlib
 import json
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, date, datetime
+from functools import partial
+from itertools import islice
 from typing import Literal
 from xml.etree import ElementTree
 
@@ -15,7 +19,10 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from radar.web.configuration import configuration, model_config, model_options
 from radar.web.dossiers import persist_findings
+from radar.web.model_gateway import gateway_error, routed_client
 from radar.web.model_output import parse_model_json
+from radar.web.perplexity_route import openrouter_search_model
+from radar.web.perplexity_search import search_perplexity
 from radar.web.sources import (
     Page,
     canonical_url,
@@ -33,6 +40,34 @@ REGIONS = {
     "russia": ["Россия"],
 }
 SEARCH_LOCK = threading.Lock()
+PERPLEXITY_QUERY_LIMIT = 2
+
+
+class YandexPacer:
+    """One process-wide queue for synchronous search starts, with no hidden retries."""
+
+    def __init__(self, interval=1.0, *, clock=None, sleep=None):
+        self.interval = interval
+        self.clock = clock or time.monotonic
+        self.sleep = sleep or time.sleep
+        self.lock = threading.Lock()
+        self.last_start = None
+
+    @contextmanager
+    def slot(self):
+        # Hold the lock through POST so a descheduled worker cannot spend its old
+        # reservation later and collide with another worker's actual request start.
+        with self.lock:
+            if self.last_start is not None:
+                while (delay := self.last_start + self.interval - self.clock()) > 0:
+                    self.sleep(delay)
+            self.last_start = self.clock()
+            yield
+
+
+# RU Search API quota: 1 synchronous request/second. All report/discovery workers
+# share this queue; successful query caches do not enter yandex() at all.
+YANDEX_PACER = YandexPacer()
 
 
 class SearchRequest(BaseModel):
@@ -97,16 +132,30 @@ class FindingEnvelope(BaseModel):
     objects: list[dict] = Field(max_length=30)
 
 
-def call_json(client, url, headers, body, service):
+def call_json(client, url, headers, body, service, *, fixed_cost=None, timeout=None):
     try:
-        response = client.post(url, headers=headers, json=body)
+        options = {"timeout": timeout} if timeout is not None else {}
+        response = client.post(url, headers=headers, json=body, **options)
         response.raise_for_status()
         result = response.json()
         from radar.web.money import settle_response
 
-        settle_response(result)
+        settle_response(result if fixed_cost is None else {"usage": {"cost": fixed_cost}})
         return result
     except httpx.HTTPStatusError as exc:
+        from radar.web.model_gateway import GatewayHTTPError
+
+        message = gateway_error(exc.response, service)
+        if exc.request.url.host == "openrouter.ai":
+            raise GatewayHTTPError(
+                message
+                or f"{service}: сервис моделей отклонил запрос ({exc.response.status_code}).",
+                status_code=exc.response.status_code,
+                service_host=exc.request.url.host,
+                retry_after=exc.response.headers.get("Retry-After"),
+            ) from None
+        if message:
+            raise ValueError(message) from None
         code = exc.response.status_code
         raise ValueError(
             f"{service}: ответ {code}. Проверьте ключ, баланс и права доступа."
@@ -118,25 +167,35 @@ def call_json(client, url, headers, body, service):
 
 
 def yandex(client, cfg, query, period):
-    data = call_json(
-        client,
-        "https://searchapi.api.cloud.yandex.net/v2/web/search",
-        {"Authorization": "Api-Key " + cfg["YANDEX_SEARCH_API_KEY"]},
-        {
-            "folderId": cfg["YANDEX_FOLDER_ID"],
-            "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query},
-            "groupSpec": {"groupMode": "GROUP_MODE_FLAT", "groupsOnPage": "10", "docsInGroup": "1"},
-            "responseFormat": "FORMAT_XML",
-            "maxPassages": "5",
-            "l10n": "LOCALIZATION_RU",
-            "period": {
-                "month": "PERIOD_MONTH",
-                "fortnight": "PERIOD_2_WEEKS",
-                "all": "PERIOD_ALL_TIME",
-            }[period],
-        },
-        "Yandex Search",
-    )
+    with YANDEX_PACER.slot():
+        data = call_json(
+            client,
+            "https://searchapi.api.cloud.yandex.net/v2/web/search",
+            {"Authorization": "Api-Key " + cfg["YANDEX_SEARCH_API_KEY"]},
+            {
+                "folderId": cfg["YANDEX_FOLDER_ID"],
+                "query": {"searchType": "SEARCH_TYPE_RU", "queryText": query},
+                "groupSpec": {
+                    "groupMode": "GROUP_MODE_FLAT",
+                    "groupsOnPage": "10",
+                    "docsInGroup": "1",
+                },
+                "responseFormat": "FORMAT_XML",
+                "maxPassages": "5",
+                "l10n": "LOCALIZATION_RU",
+                "period": {
+                    "month": "PERIOD_MONTH",
+                    "fortnight": "PERIOD_2_WEEKS",
+                    "all": "PERIOD_ALL_TIME",
+                }[period],
+                **(
+                    {"sortSpec": {"sortMode": "SORT_MODE_BY_TIME", "sortOrder": "SORT_ORDER_DESC"}}
+                    if period != "all"
+                    else {}
+                ),
+            },
+            "Yandex Search",
+        )
     try:
         raw = base64.b64decode(data["rawData"], validate=True)
         if len(raw) > 2_000_000 or b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
@@ -301,6 +360,31 @@ def discover(
         SEARCH_LOCK.release()
 
 
+def _unique_documents(documents):
+    unique = {}
+    for doc in documents:
+        try:
+            url = canonical_url(doc["url"])
+        except ValueError:
+            continue
+        unique.setdefault(url, {**doc, "url": url})
+    return unique
+
+
+def _sparse_queries(primary_results):
+    seen, sparse = set(), []
+    for query, period, rows in primary_results:
+        urls = set(_unique_documents(rows))
+        new = len(urls - seen)
+        seen.update(urls)
+        if len(urls) < 3 or new < 2:
+            sparse.append((new, len(urls), query, period))
+    return [
+        (query, period)
+        for _, _, query, period in sorted(sparse, key=lambda item: item[:2])
+    ]
+
+
 def _discover(store, request, client, reader, progress, cancelled, dataset, prepared, run_id):
     cfg = configuration(store.root)
     model = model_config(store.root)["extract"]
@@ -327,12 +411,13 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
     from radar.web.operations import BudgetExceeded, remaining_calls, reserve_call
 
     run_id = run_id or uuid4().hex
-    search_allowance = max(1, remaining_calls(store, run_id) // 2)
+    remaining = remaining_calls(store, run_id)
+    search_allowance = remaining if remaining == float("inf") else max(1, remaining // 2)
     requests = 0
     cache_hits = 0
     errors = []
 
-    def cached(key, operation, service="search"):
+    def cached(key, operation, service="search", *, bounded_search=False):
         nonlocal requests, cache_hits
         check()
         with store.connect() as db:
@@ -340,6 +425,8 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
         if row:
             cache_hits += 1
             return json.loads(row[0])
+        if bounded_search and requests >= search_allowance:
+            raise BudgetExceeded("Часть запросов отложена: бюджет сохранён для разбора.")
         reserve_call(store, run_id, service)
         requests += 1
         value = operation()
@@ -349,9 +436,18 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
 
     day = datetime.now(UTC).date().isoformat()
     owns_client = client is None
-    client = client or httpx.Client(timeout=httpx.Timeout(90, connect=15), follow_redirects=False)
+    client = client or routed_client(
+        cfg, timeout=httpx.Timeout(90, connect=15), follow_redirects=False
+    )
     try:
+        perplexity_model = (
+            openrouter_search_model(store.root, cfg)
+            if dataset == "web" and prepared is None else ""
+        )
         documents = []
+        perplexity = None
+        perplexity_plans = []
+        primary_failure = None
         prospecting = {"queries": [], "developers": [], "errors": []}
         completed_queries = []
         report("search", 2, "Ищем публикации по регионам и типам проблем")
@@ -370,8 +466,10 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                 (q, "all" if request.target.strip() or request.expansion else request.period)
                 for q in queries
             ]
-            successful_queries = 0
-            query_results = []
+            primary_results = []
+            supplement_configured = dataset == "web" and bool(
+                perplexity_model or (cfg.get("PERPLEXITY_API_KEY") or "").strip()
+            )
             for i, (query, period) in enumerate(planned):
                 report(
                     "search",
@@ -391,29 +489,83 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                     break
                 try:
                     rows = cached(key, lambda q=query, p=period: yandex(client, cfg, q, p))
-                    successful_queries += 1
                     completed_queries.append(query)
-                    query_results.append(rows)
+                    primary_results.append((query, period, rows))
                 except ValueError as exc:
                     if isinstance(exc, BudgetExceeded):
                         errors.append({"stage": "search", "detail": str(exc), "query": query})
                         break
                     errors.append({"stage": "search", "detail": str(exc), "query": query})
+                    primary_results.append((query, period, []))
                     if "401" in str(exc) or "403" in str(exc):
-                        raise
-            if not successful_queries:
-                raise ValueError("Ни один поисковый запрос не выполнен. Проверьте подключения.")
+                        if not supplement_configured:
+                            raise
+                        primary_failure = exc
+                        break
+            if supplement_configured:
+                perplexity_plans = (
+                    _sparse_queries(primary_results) if completed_queries else planned
+                )
             # Interleave query results so a small page budget covers every selected region.
             documents = [
-                rows[rank] for rank in range(10) for rows in query_results if rank < len(rows)
+                rows[rank]
+                for rank in range(10)
+                for _, _, rows in primary_results
+                if rank < len(rows)
             ]
-        unique = {}
-        for doc in documents:
-            try:
-                doc["url"] = canonical_url(doc["url"])
-                unique.setdefault(doc["url"], doc)
-            except ValueError:
-                continue
+        unique = _unique_documents(documents)
+        if perplexity_plans and len(unique) < limits["max_pages"]:
+            perplexity_finder = search_perplexity
+            perplexity_service = "perplexity_search"
+            perplexity_version = "perplexity-v1"
+            if perplexity_model:
+                from radar.web.perplexity_search import search_perplexity_via_openrouter
+
+                perplexity_finder = partial(
+                    search_perplexity_via_openrouter, model=perplexity_model
+                )
+                perplexity_service = "openrouter_perplexity"
+                perplexity_version = f"perplexity-openrouter-v1:{perplexity_model}"
+            perplexity = {
+                "queries_completed": 0, "unique_urls": 0, "full_pages": 0,
+                "read_urls": [], "errors": [],
+            }
+            seen_urls = set(unique)
+            for query, period in list(dict.fromkeys(perplexity_plans))[:PERPLEXITY_QUERY_LIMIT]:
+                report("search", 24, "Проверяем дополнительные ссылки через Perplexity")
+                key = hashlib.sha256(
+                    f"{perplexity_version}:{day}:{period}:{query}".encode()
+                ).hexdigest()
+                try:
+                    rows = cached(
+                        key, lambda q=query, p=period: perplexity_finder(client, cfg, q, p),
+                        service=perplexity_service, bounded_search=True,
+                    )
+                except BudgetExceeded as exc:
+                    perplexity["errors"].append(str(exc))
+                    continue
+                except ValueError:
+                    perplexity["errors"].append("Perplexity не выполнил дополнительный запрос.")
+                    continue
+                perplexity["queries_completed"] += 1
+                novel = {
+                    url: row for url, row in _unique_documents(rows).items() if url not in seen_urls
+                }
+                seen_urls.update(novel)
+                perplexity["unique_urls"] += len(novel)
+                room = limits["max_pages"] - len(unique)
+                unique.update(
+                    (url, {**row, "search_provider": "perplexity"})
+                    for url, row in islice(novel.items(), room)
+                )
+                if len(unique) >= limits["max_pages"]:
+                    break
+        if prepared is None and not completed_queries and not (
+            perplexity and perplexity["queries_completed"]
+        ):
+            if primary_failure is not None:
+                raise primary_failure
+            raise ValueError("Ни один поисковый запрос не выполнен. Проверьте подключения.")
         total_found_pages = len(unique)
         documents = list(unique.values())[: limits["max_pages"]]
         loaded, page_requests = 0, 0
@@ -434,6 +586,9 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                     published_at=page.published_at,
                 )
                 loaded += 1
+                if perplexity and doc.get("search_provider") == "perplexity":
+                    perplexity["full_pages"] += 1
+                    perplexity["read_urls"].append(doc["url"])
             else:
                 errors.append({"stage": "pages", "url": doc["url"], "detail": page.error})
                 snippet = Page(
@@ -455,6 +610,8 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
                 doc.update(source_kind="snippet", source_id=snippet.id, published_at=None)
         batches, batch, size = [], [], 0
         for doc in documents:
+            if doc.get("search_provider") == "perplexity" and doc["source_kind"] != "page":
+                continue
             copy = dict(doc)
             if len(copy["text"]) > min(8000, limits["batch_characters"]):
                 from radar.web.sources import research_excerpt
@@ -529,10 +686,24 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
         )
         totals["added"] += seeded
         accepted_ids.update(seed_ids)
-        totals["found"] = len(accepted_ids)
+        brand_only = []
+        if dataset == "web":
+            from radar.web import brand_analytics
+
+            brand_analytics.link_saved_messages(store, accepted_ids)
+            brand_only = [
+                ident for ident in brand_analytics.search_saved_records(
+                    store,
+                    regions=limits["regions"][request.region],
+                    target=request.target,
+                    days=14 if request.period == "fortnight" else 30,
+                ) if ident not in accepted_ids
+            ]
+        record_ids = [*sorted(accepted_ids), *brand_only]
+        totals["found"] = len(record_ids)
         result = {
             **totals,
-            "record_ids": sorted(accepted_ids),
+            "record_ids": record_ids,
             "seed_ids": seed_ids,
             "coverage": {
                 "regions": limits["regions"][request.region],
@@ -557,6 +728,12 @@ def _discover(store, request, client, reader, progress, cancelled, dataset, prep
             "limitations": "Цитаты проверены на совпадение с источником, "
             "достоверность утверждений не сертифицирована.",
         }
+        if dataset == "web":
+            result["brand_analytics"] = brand_analytics.search_summary(store, record_ids)
+            if brand_only:
+                result["brand_analytics_only_ids"] = brand_only
+        if perplexity is not None:
+            result["perplexity"] = perplexity
         if result["skipped_pages"] or result["skipped_batches"]:
             result["status"] = "partial"
         with store.connect() as db:
